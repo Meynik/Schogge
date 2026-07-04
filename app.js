@@ -283,6 +283,30 @@
     return Number.isInteger(turn.regularRollCount) ? turn.regularRollCount : turn.rollCount || 0;
   }
 
+  function getActualThrowCount(turn) {
+    if (!turn) {
+      return 0;
+    }
+    if (Number.isInteger(turn.actualThrowCount)) {
+      return turn.actualThrowCount;
+    }
+    return Number.isInteger(turn.rollCount) ? turn.rollCount : 0;
+  }
+
+  function getNextThrowNumber(turn) {
+    return getActualThrowCount(turn) + 1;
+  }
+
+  function registerThrowStart(turn, wasForced) {
+    const throwNumber = getNextThrowNumber(turn);
+    turn.actualThrowCount = throwNumber;
+    turn.rollCount = throwNumber;
+    if (!wasForced) {
+      turn.regularRollCount = getRegularRollCount(turn) + 1;
+    }
+    return throwNumber;
+  }
+
   function deriveStarterRegularLimit(turn) {
     const regularRollCount = getRegularRollCount(turn);
     if (regularRollCount < 1) {
@@ -316,7 +340,7 @@
     if (!turn.held.some((held) => !held)) {
       return false;
     }
-    return getRegularRollCount(turn) < getTurnRegularLimit(round, turn);
+    return getActualThrowCount(turn) < getTurnRegularLimit(round, turn);
   }
 
   function canTakeTurnResult(round, turn) {
@@ -343,6 +367,8 @@
     sortWorstFirst,
     sortDiceDesc,
     getRegularRollCount,
+    getActualThrowCount,
+    getNextThrowNumber,
     deriveStarterRegularLimit,
     isStartPlayerTurn,
     isStartPlayerSettingLimit,
@@ -434,6 +460,7 @@
   function clearTurnAnimation(turn) {
     return {
       ...turn,
+      actualThrowCount: getActualThrowCount(turn),
       regularRollCount: Number.isInteger(turn.regularRollCount) ? turn.regularRollCount : turn.rollCount || 0,
       isRolling: false,
       rollingDice: null,
@@ -607,6 +634,8 @@
     const canTake = canTakeTurnResult(round, turn);
     const canRoll = canRollTurn(round, turn);
     const regularLimit = getTurnRegularLimit(round, turn);
+    const actualThrowCount = getActualThrowCount(turn);
+    const nextThrowNumber = getNextThrowNumber(turn);
     const guidance = turnGuidance(round, turn);
     const confirmHint = canTake && score ? `Erkannte Kombination: ${score.label}. Bitte Ergebnis bestätigen.` : "";
 
@@ -616,7 +645,8 @@
           <p class="eyebrow">Spielerzug</p>
           <h2>${escapeHtml(player?.name || "Spieler")}</h2>
           <div class="stat-grid">
-            <div class="stat"><span>Regulär</span><strong>${getRegularRollCount(turn)}/${regularLimit}</strong></div>
+            <div class="stat"><span>Würfe</span><strong>${actualThrowCount}/${regularLimit}</strong></div>
+            <div class="stat"><span>Regulär</span><strong>${getRegularRollCount(turn)}</strong></div>
             <div class="stat"><span>Pott</span><strong>${state.pot}</strong></div>
             <div class="stat"><span>Aus</span><strong>${round.schoggeAusCount}</strong></div>
           </div>
@@ -658,7 +688,7 @@
         </div>
         <div class="actions">
           <button class="button ${turn.forceReroll ? "gold" : ""}" id="roll-dice" ${canRoll ? "" : "disabled"}>
-            ${turn.forceReroll ? "Pflichtwurf" : "Würfeln"}
+            ${turn.forceReroll ? `Pflichtwurf (Wurf ${nextThrowNumber})` : `Würfeln (Wurf ${nextThrowNumber})`}
           </button>
           <button class="button gold" id="take-result" ${canTake ? "" : "disabled"}>Ergebnis bestätigen</button>
         </div>
@@ -702,7 +732,7 @@
           <h2>${escapeHtml(result.playerName)}: ${escapeHtml(resultLabel)}</h2>
           <div class="stat-grid">
             <div class="stat"><span>Anzeige</span><strong>${escapeHtml(resultLabel)}</strong></div>
-            <div class="stat"><span>Regulär</span><strong>${result.regularRollCount || result.rollCount}</strong></div>
+            <div class="stat"><span>Würfe</span><strong>${result.actualThrowCount || result.rollCount}</strong></div>
             <div class="stat"><span>Pott</span><strong>${result.potAfter}</strong></div>
           </div>
         </div>
@@ -759,7 +789,7 @@
                 <li class="result-row ${loserIds.has(result.playerId) ? (outcome.type === "glass" ? "is-glass" : "is-loser") : ""}">
                   <div class="result-main">
                     <strong>${escapeHtml(result.playerName)}</strong>
-                    <span class="result-meta">${escapeHtml(resultLabel)} · ${result.regularRollCount || result.rollCount} reguläre${(result.regularRollCount || result.rollCount) === 1 ? "r" : ""} Wurf${(result.regularRollCount || result.rollCount) === 1 ? "" : "e"}${loserText}</span>
+                    <span class="result-meta">${escapeHtml(resultLabel)} · ${formatResultThrowMeta(result)}${loserText}</span>
                   </div>
                   <div class="score-badge">${escapeHtml(resultLabel)}</div>
                 </li>
@@ -831,6 +861,16 @@
         <strong>${escapeHtml(lowest.label)}</strong>
       </div>
     `;
+  }
+
+  function formatResultThrowMeta(result) {
+    const actual = getActualThrowCount(result);
+    const regular = getRegularRollCount(result);
+    const actualText = `${actual} Wurf${actual === 1 ? "" : "e"} gesamt`;
+    if (actual === regular) {
+      return actualText;
+    }
+    return `${actualText} · ${regular} reguläre${regular === 1 ? "r" : ""} Wurf${regular === 1 ? "" : "e"}`;
   }
 
   function turnGuidance(round, turn) {
@@ -1000,6 +1040,7 @@
       playerId,
       dice: [null, null, null],
       held: [false, false, false],
+      actualThrowCount: 0,
       rollCount: 0,
       regularRollCount: 0,
       forceReroll: false,
@@ -1008,7 +1049,7 @@
       rollingIndices: [],
       rollAnimationToken: null,
       confirmationLocked: false,
-      message: "Bereit für den ersten Wurf.",
+      message: "Bereit für Wurf 1.",
     };
     state.screen = "turn";
     state.panel = null;
@@ -1016,8 +1057,9 @@
   }
 
   function performRoll() {
+    const round = state.currentRound;
     const turn = state.currentTurn;
-    if (!turn || turn.isRolling) {
+    if (!round || !turn || turn.isRolling || !canRollTurn(round, turn)) {
       return;
     }
     const wasForced = turn.forceReroll;
@@ -1026,11 +1068,13 @@
       return;
     }
     const finalDice = createFinalRollDice(turn, wasForced, rollingIndices);
+    const throwNumber = registerThrowStart(turn, wasForced);
 
     startRollAnimation(turn, {
       finalDice,
       rollingIndices,
       wasForced,
+      throwNumber,
     });
   }
 
@@ -1074,7 +1118,7 @@
     }
   }
 
-  function startRollAnimation(turn, { finalDice, rollingIndices, wasForced }) {
+  function startRollAnimation(turn, { finalDice, rollingIndices, wasForced, throwNumber }) {
     clearActiveRollTimers();
     const token = createId();
     const reduceMotion = prefersReducedMotion();
@@ -1086,7 +1130,7 @@
     turn.rollingDice = createRollingDisplayDice(turn, rollingIndices);
     turn.rollAnimationToken = token;
     turn.confirmationLocked = false;
-    turn.message = wasForced ? "Pflichtwurf läuft. Die Pflichtwürfel rollen." : "Würfel rollen.";
+    turn.message = wasForced ? `Pflichtwurf läuft. Wurf ${throwNumber}.` : `Würfel rollen. Wurf ${throwNumber}.`;
     render();
 
     activeRollIntervalId = setInterval(() => {
@@ -1114,10 +1158,6 @@
     turn.rollAnimationToken = null;
     turn.dice = finalDice;
     turn.confirmationLocked = false;
-    turn.rollCount += 1;
-    if (!wasForced) {
-      turn.regularRollCount = getRegularRollCount(turn) + 1;
-    }
 
     // Erst nach der sichtbaren Animation greifen die Regelentscheidungen.
     const doubleSix = applyDoubleSixRule(turn.dice);
@@ -1125,7 +1165,7 @@
       turn.dice = doubleSix.dice;
       turn.held = doubleSix.held;
       turn.forceReroll = true;
-      turn.message = `Doppel-Sechs: ${doubleSix.display}. Alle Nicht-Einsen müssen erneut gewürfelt werden.`;
+      turn.message = `Doppel-Sechs: ${doubleSix.display}. Alle Nicht-Einsen müssen erneut gewürfelt werden. Der Pflichtwurf ist Wurf ${getNextThrowNumber(turn)}.`;
       render();
       return;
     }
@@ -1138,14 +1178,14 @@
         ? "Pflichtwurf erledigt. Du kannst bestätigen oder weiterwürfeln."
         : "Pflichtwurf erledigt. Bitte Ergebnis bestätigen.";
     } else {
-      const limitReached = getRegularRollCount(turn) >= getTurnRegularLimit(state.currentRound, turn);
+      const limitReached = getActualThrowCount(turn) >= getTurnRegularLimit(state.currentRound, turn);
       turn.message = limitReached
         ? "Wurflimit erreicht. Bitte Ergebnis bestätigen."
         : "Wurf abgeschlossen. Du kannst bestätigen oder weiterwürfeln.";
     }
 
     const score = scoreCombination(turn.dice);
-    if (score.category === "schogge_aus" && turn.rollCount === 1) {
+    if (score.category === "schogge_aus" && getActualThrowCount(turn) === 1) {
       acceptTurn("first_aus");
       return;
     }
@@ -1172,7 +1212,7 @@
     let special = null;
     let setRoundLimit = null;
 
-    if (score.category === "schogge_aus" && turn.rollCount === 1) {
+    if (score.category === "schogge_aus" && getActualThrowCount(turn) === 1) {
       special = "immediate_aus";
       round.immediateAus = {
         playerId: turn.playerId,
@@ -1199,7 +1239,8 @@
       playerName: player?.name || "Spieler",
       dice: [...turn.dice],
       held: [...turn.held],
-      rollCount: turn.rollCount,
+      rollCount: getActualThrowCount(turn),
+      actualThrowCount: getActualThrowCount(turn),
       regularRollCount: getRegularRollCount(turn),
       completedOrder,
       score,
@@ -1265,6 +1306,8 @@
         displayDice: result.score.displayDice,
         label: getResultDisplayName(result, round.results),
         rollCount: result.rollCount,
+        actualThrowCount: result.actualThrowCount || result.rollCount,
+        regularRollCount: result.regularRollCount || result.rollCount,
       })),
     };
 

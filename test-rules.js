@@ -8,6 +8,8 @@ const {
   sortWorstFirst,
   deriveStarterRegularLimit,
   getTurnRegularLimit,
+  getActualThrowCount,
+  getNextThrowNumber,
   canRollTurn,
   canTakeTurnResult,
   shouldAutoAcceptTurn,
@@ -38,12 +40,14 @@ function turnState({
   playerId = "A",
   regularRollCount = 0,
   rollCount = regularRollCount,
+  actualThrowCount = rollCount,
   forceReroll = false,
   confirmationLocked = false,
   dice = [2, 3, 4],
 }) {
   return {
     playerId,
+    actualThrowCount,
     regularRollCount,
     rollCount,
     forceReroll,
@@ -194,6 +198,91 @@ test("Doppel-Sechs bei 661, 662 und 666", () => {
   const sixSixSix = applyDoubleSixRule([6, 6, 6]);
   assert.equal(sixSixSix.display, "166");
   assert.deepEqual(sixSixSix.mustRerollIndices.map((index) => sixSixSix.dice[index]), [6, 6]);
+});
+
+test("Pflichtwurf nach Doppel-Sechs im ersten Wurf ist Wurf 2 und erzeugt keinen vierten Normalwurf", () => {
+  const round = roundState(3);
+  const pendingForced = turnState({
+    regularRollCount: 1,
+    actualThrowCount: 1,
+    rollCount: 1,
+    forceReroll: true,
+    dice: [1, 6, 2],
+  });
+  const afterForced = turnState({
+    regularRollCount: 1,
+    actualThrowCount: 2,
+    rollCount: 2,
+    dice: [1, 5, 2],
+  });
+  const afterThirdActualThrow = turnState({
+    regularRollCount: 2,
+    actualThrowCount: 3,
+    rollCount: 3,
+    dice: [5, 4, 2],
+  });
+
+  assert.equal(getNextThrowNumber(pendingForced), 2);
+  assert.equal(canRollTurn(round, pendingForced), true);
+  assert.equal(canRollTurn(round, afterForced), true);
+  assert.equal(canRollTurn(round, afterThirdActualThrow), false);
+});
+
+test("Pflichtwurf nach Doppel-Sechs im zweiten Wurf ist Wurf 3 und erzeugt keinen vierten Normalwurf", () => {
+  const round = roundState(3);
+  const pendingForced = turnState({
+    regularRollCount: 2,
+    actualThrowCount: 2,
+    rollCount: 2,
+    forceReroll: true,
+    dice: [1, 6, 2],
+  });
+  const afterForced = turnState({
+    regularRollCount: 2,
+    actualThrowCount: 3,
+    rollCount: 3,
+    dice: [1, 5, 2],
+  });
+
+  assert.equal(getNextThrowNumber(pendingForced), 3);
+  assert.equal(canRollTurn(round, pendingForced), true);
+  assert.equal(canRollTurn(round, afterForced), false);
+});
+
+test("Doppel-Sechs im dritten Wurf erlaubt Pflichtwurf als Wurf 4", () => {
+  const round = roundState(3);
+  const pendingForced = turnState({
+    regularRollCount: 3,
+    actualThrowCount: 3,
+    rollCount: 3,
+    forceReroll: true,
+    dice: [1, 6, 2],
+  });
+  const afterForced = turnState({
+    regularRollCount: 3,
+    actualThrowCount: 4,
+    rollCount: 4,
+    dice: [1, 5, 2],
+  });
+
+  assert.equal(getNextThrowNumber(pendingForced), 4);
+  assert.equal(canRollTurn(round, pendingForced), true);
+  assert.equal(canRollTurn(round, afterForced), false);
+});
+
+test("Doppel-Sechs im vierten Pflichtwurf erlaubt weiteren Pflichtwurf als Wurf 5", () => {
+  const round = roundState(3);
+  const pendingForced = turnState({
+    regularRollCount: 3,
+    actualThrowCount: 4,
+    rollCount: 4,
+    forceReroll: true,
+    dice: [1, 6, 2],
+  });
+
+  assert.equal(getActualThrowCount(pendingForced), 4);
+  assert.equal(getNextThrowNumber(pendingForced), 5);
+  assert.equal(canRollTurn(round, pendingForced), true);
 });
 
 test("Letzter regulärer Wurf wartet auf Bestätigung statt Auto-Übernahme", () => {
