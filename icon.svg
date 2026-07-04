@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Schogge Icon">
+  <rect width="512" height="512" rx="96" fill="#214e3f"/>
+  <rect x="88" y="88" width="336" height="336" rx="52" fill="#fff7df"/>
+  <circle cx="256" cy="256" r="32" fill="#171b1d"/>
+  <circle cx="176" cy="176" r="32" fill="#bb3f4a"/>
+  <circle cx="336" cy="336" r="32" fill="#bb3f4a"/>
+</svg>
