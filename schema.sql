@@ -81,7 +81,7 @@ declare
 begin
   sorted := public.schogge_sort_desc(dice);
   if array_length(sorted, 1) <> 3 then
-    raise exception 'Es werden genau drei Wuerfel erwartet.';
+    raise exception 'Es werden genau drei Würfel erwartet.';
   end if;
 
   key := array_to_string(sorted, '');
@@ -103,7 +103,7 @@ begin
     rank_value := 4000 + sorted[1];
     label := case sorted[1]
       when 6 then 'Sechser Drasch'
-      when 5 then 'Fuenfer Drasch'
+      when 5 then 'Fünfer Drasch'
       when 4 then 'Vierer Drasch'
       when 3 then 'Dreier Drasch'
       when 2 then 'Zweier Drasch'
@@ -114,10 +114,10 @@ begin
     sips := 2;
     rank_value := 3000 + case key when '321' then 1 when '432' then 2 when '543' then 3 else 4 end;
     label := case key
-      when '654' then 'Grosse Strasse'
-      when '543' then 'Mittelgrosse Strasse'
-      when '432' then 'Mittelkleine Strasse'
-      else 'Kleine Strasse'
+      when '654' then 'Große Straße'
+      when '543' then 'Mittelgroße Straße'
+      when '432' then 'Mittelkleine Straße'
+      else 'Kleine Straße'
     end;
   else
     category := 'einfach';
@@ -225,7 +225,7 @@ as $$
     'regularRollCount', 0,
     'forceReroll', false,
     'confirmationLocked', false,
-    'message', 'Bereit fuer Wurf 1.'
+    'message', 'Bereit für Wurf 1.'
   );
 $$;
 
@@ -293,15 +293,20 @@ begin
     raise exception 'Dieser Raumcode existiert nicht.';
   end if;
   if target_room.status <> 'lobby' then
-    raise exception 'Diese Runde laeuft bereits.';
+    raise exception 'Diese Runde läuft bereits.';
   end if;
-  if (select count(*) from public.schogge_players where room_id = target_room.id and presence_state <> 'left') >= 6 then
+  if (
+    select count(*)
+    from public.schogge_players as players
+    where players.room_id = target_room.id
+      and players.presence_state <> 'left'
+  ) >= 6 then
     raise exception 'Dieser Raum ist voll.';
   end if;
 
-  select coalesce(max(seat_index), -1) + 1 into next_seat
-  from public.schogge_players
-  where room_id = target_room.id;
+  select coalesce(max(players.seat_index), -1) + 1 into next_seat
+  from public.schogge_players as players
+  where players.room_id = target_room.id;
 
   insert into public.schogge_players(room_id, name, seat_index)
   values (target_room.id, clean_name, next_seat)
@@ -378,16 +383,29 @@ begin
   if room_row.status <> 'lobby' then
     raise exception 'Das Spiel wurde bereits gestartet.';
   end if;
-  if (select count(*) from public.schogge_players where room_id = room_row.id and presence_state <> 'left') < 2 then
+  if (
+    select count(*)
+    from public.schogge_players as players
+    where players.room_id = room_row.id
+      and players.presence_state <> 'left'
+  ) < 2 then
     raise exception 'Mindestens zwei Spieler sind erforderlich.';
   end if;
 
-  select jsonb_agg(jsonb_build_object('id', id, 'name', name) order by seat_index), min(id)
-  into players_json, starter
-  from public.schogge_players
-  where room_id = room_row.id and presence_state <> 'left';
+  select jsonb_agg(jsonb_build_object('id', players.id, 'name', players.name) order by players.seat_index)
+  into players_json
+  from public.schogge_players as players
+  where players.room_id = room_row.id
+    and players.presence_state <> 'left';
 
-  starter := (select id from public.schogge_players where room_id = room_row.id and presence_state <> 'left' order by random() limit 1);
+  starter := (
+    select players.id
+    from public.schogge_players as players
+    where players.room_id = room_row.id
+      and players.presence_state <> 'left'
+    order by random()
+    limit 1
+  );
 
   game := jsonb_build_object(
     'players', players_json,
@@ -425,7 +443,7 @@ begin
   perform public.schogge_assert_player(room_id, player_id, player_token);
   select * into room_row from public.schogge_rooms where id = room_id for update;
   if room_row.status <> 'playing' then
-    raise exception 'Das Spiel laeuft nicht.';
+    raise exception 'Das Spiel läuft nicht.';
   end if;
   game := room_row.game_state;
   starter := (game->>'nextStarterId')::uuid;
@@ -433,21 +451,26 @@ begin
     raise exception 'Nur der Startspieler oder Host darf die Runde starten.';
   end if;
 
-  select array_agg(id order by sort_order) into order_ids
+  select array_agg(ordered_players.id order by ordered_players.sort_order) into order_ids
   from (
-    select id,
-      case when seat_index >= (select seat_index from public.schogge_players where id = starter)
-        then seat_index
-        else seat_index + 100
+    select players.id,
+      case when players.seat_index >= (
+          select starter_player.seat_index
+          from public.schogge_players as starter_player
+          where starter_player.id = starter
+        )
+        then players.seat_index
+        else players.seat_index + 100
       end as sort_order
-    from public.schogge_players
-    where room_id = room_row.id and presence_state <> 'left'
+    from public.schogge_players as players
+    where players.room_id = room_row.id
+      and players.presence_state <> 'left'
   ) ordered_players;
 
   round_json := jsonb_build_object(
     'number', coalesce((game->>'roundNumber')::integer, 1),
     'startPlayerId', starter,
-    'startPlayerName', (select name from public.schogge_players where id = starter),
+    'startPlayerName', (select players.name from public.schogge_players as players where players.id = starter),
     'regularLimit', null,
     'turnOrder', to_jsonb(order_ids),
     'currentTurnIndex', 0,
@@ -487,10 +510,10 @@ begin
     raise exception 'Du bist nicht am Zug.';
   end if;
   if coalesce((turn->>'forceReroll')::boolean, false) then
-    raise exception 'Beim Pflichtwurf duerfen keine Wuerfel gehalten werden.';
+    raise exception 'Beim Pflichtwurf dürfen keine Würfel gehalten werden.';
   end if;
   if die_index < 0 or die_index > 2 or (turn->'dice'->die_index) = 'null'::jsonb then
-    raise exception 'Dieser Wuerfel kann nicht gehalten werden.';
+    raise exception 'Dieser Würfel kann nicht gehalten werden.';
   end if;
   held := turn->'held';
   current_value := coalesce((held->>die_index)::boolean, false);
@@ -580,7 +603,7 @@ begin
 
   turn := jsonb_set(turn, '{forceReroll}', 'false'::jsonb);
   turn := jsonb_set(turn, '{held}', '[false,false,false]'::jsonb);
-  turn := jsonb_set(turn, '{message}', to_jsonb(case when actual_count >= limit_count then 'Wurflimit erreicht. Bitte Ergebnis bestaetigen.' else 'Wurf abgeschlossen.' end));
+  turn := jsonb_set(turn, '{message}', to_jsonb(case when actual_count >= limit_count then 'Wurflimit erreicht. Bitte Ergebnis bestätigen.' else 'Wurf abgeschlossen.' end));
   game := jsonb_set(game, '{currentTurn}', turn);
   score := public.schogge_score(turn->'dice');
 
@@ -626,7 +649,7 @@ begin
     raise exception 'Du bist nicht am Zug.';
   end if;
   if coalesce((turn->>'forceReroll')::boolean, false) then
-    raise exception 'Der Pflichtwurf muss zuerst ausgefuehrt werden.';
+    raise exception 'Der Pflichtwurf muss zuerst ausgeführt werden.';
   end if;
 
   score := public.schogge_score(turn->'dice');
@@ -634,7 +657,7 @@ begin
   pot_before := pot;
   results := coalesce(round_json->'results', '[]'::jsonb);
   completed_order := jsonb_array_length(results) + 1;
-  player_name := (select name from public.schogge_players where id = player_id);
+  player_name := (select players.name from public.schogge_players as players where players.id = player_id);
 
   if score->>'category' = 'schogge_aus' and coalesce((turn->>'actualThrowCount')::integer, 0) = 1 then
     special := 'immediate_aus';
@@ -670,13 +693,18 @@ begin
     'potChange', pot_change,
     'special', special,
     'setRoundLimit', set_limit,
-    'message', 'Ergebnis uebernommen.'
+    'message', 'Ergebnis übernommen.'
   );
 
   results := results || jsonb_build_array(result_json);
   round_json := jsonb_set(round_json, '{results}', results);
   round_done := (round_json->'immediateAus') <> 'null'::jsonb
-    or jsonb_array_length(results) >= (select count(*) from public.schogge_players where room_id = room_row.id and presence_state <> 'left');
+    or jsonb_array_length(results) >= (
+      select count(*)
+      from public.schogge_players as players
+      where players.room_id = room_row.id
+        and players.presence_state <> 'left'
+    );
 
   game := jsonb_set(game, '{currentRound}', round_json);
   game := jsonb_set(game, '{lastResult}', result_json);
@@ -751,7 +779,7 @@ begin
     where (item.value->'score'->>'rank')::integer = worst_rank;
     outcome := jsonb_build_object(
       'type', 'sips',
-      'title', 'Schlueckerunde',
+      'title', 'Schlückerunde',
       'losers', jsonb_build_array(worst),
       'drinks', pot * case when tied_worst > 1 then 2 else 1 end,
       'multiplier', case when tied_worst > 1 then 2 else 1 end,
@@ -822,7 +850,7 @@ begin
   perform public.schogge_assert_player(room_id, player_id, player_token);
   select * into room_row from public.schogge_rooms where id = room_id for update;
   if room_row.host_player_id <> player_id then
-    raise exception 'Nur der Host darf die naechste Runde starten.';
+    raise exception 'Nur der Host darf die nächste Runde starten.';
   end if;
   game := room_row.game_state;
   game := jsonb_set(game, '{screen}', '"roundStart"');

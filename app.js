@@ -427,6 +427,7 @@
     loading: false,
     channel: null,
     client: null,
+    rollAnimation: null,
   };
   let activeRollIntervalId = null;
   let activeRollTimeoutId = null;
@@ -885,11 +886,17 @@
       return renderOnlineRoundStartView(game);
     }
 
-    const score = currentTurn?.dice?.every(Boolean) ? scoreCombination(currentTurn.dice) : null;
+    const rollAnimation = getOnlineRollAnimation(currentTurn);
+    const isRolling = Boolean(rollAnimation);
+    const visibleDice = isRolling ? rollAnimation.rollingDice : currentTurn?.dice || [null, null, null];
+    const rollingIndices = rollAnimation?.rollingIndices || [];
+    const score = !isRolling && currentTurn?.dice?.every(Boolean) ? scoreCombination(currentTurn.dice) : null;
     const regularLimit = round && currentTurn ? getTurnRegularLimit(round, currentTurn) : 3;
-    const canRoll = myTurn && round && currentTurn && canRollTurn(round, currentTurn);
-    const canTake = myTurn && round && currentTurn && canTakeTurnResult(round, currentTurn);
+    const canRoll = !isRolling && myTurn && round && currentTurn && canRollTurn(round, currentTurn);
+    const canTake = !isRolling && myTurn && round && currentTurn && canTakeTurnResult(round, currentTurn);
     const guidance = myTurn ? "Du bist dran." : `${activeName} ist dran.`;
+    const statusClass = isRolling ? "rolling" : currentTurn?.forceReroll ? "force" : "";
+    const statusMessage = isRolling ? rollAnimation.message : currentTurn?.message || guidance;
     return `
       <section class="board">
         <div class="board-inner">
@@ -904,23 +911,25 @@
       </section>
       <section class="surface dice-zone">
         ${renderOnlineMessages()}
-        <div class="status-line ${currentTurn?.forceReroll ? "force" : ""}">${escapeHtml(currentTurn?.message || guidance)}</div>
+        <div class="status-line ${statusClass}">${escapeHtml(statusMessage)}</div>
         ${renderLowestScoreField(round?.results || [])}
         <div class="dice-row" aria-label="Würfel">
-          ${(currentTurn?.dice || [null, null, null])
+          ${visibleDice
             .map((die, index) =>
               renderOnlineDie({
                 value: die,
                 index,
                 held: currentTurn?.held?.[index],
                 locked: currentTurn?.forceReroll,
-                disabled: !myTurn || currentTurn?.forceReroll,
+                disabled: isRolling || !myTurn || currentTurn?.forceReroll,
+                rolling: isRolling && rollingIndices.includes(index),
               }),
             )
             .join("")}
         </div>
         <div class="pill-row">
           ${score ? `<span class="pill ${score.category === "schogge_aus" ? "warn" : "info"}">${escapeHtml(score.label)}</span>` : ""}
+          ${isRolling ? `<span class="pill gold">Würfel rollen</span>` : ""}
           ${currentTurn?.forceReroll ? `<span class="pill gold">Pflichtwurf</span>` : ""}
           ${myTurn ? `<span class="pill good">Du bist dran</span>` : `<span class="pill info">${escapeHtml(activeName)} ist dran</span>`}
         </div>
@@ -939,21 +948,33 @@
     `;
   }
 
-  function renderOnlineDie({ value, index, held, locked, disabled }) {
+  function renderOnlineDie({ value, index, held, locked, disabled, rolling }) {
     const pips = value
       ? `<span class="die-pips pips-${value}">${Array.from({ length: value }, () => "<span></span>").join("")}</span>`
       : `<span class="die-empty">?</span>`;
     return `
       <button
-        class="die ${held ? "is-held" : ""} ${locked ? "is-locked" : ""}"
+        class="die ${held ? "is-held" : ""} ${locked ? "is-locked" : ""} ${rolling ? "is-rolling" : ""}"
         data-online-toggle-die="${index}"
         aria-label="Würfel ${index + 1}${held ? ", gehalten" : ""}"
         aria-pressed="${held ? "true" : "false"}"
+        data-rolling="${rolling ? "true" : "false"}"
         ${!value || locked || disabled ? "disabled" : ""}
       >
         ${pips}
       </button>
     `;
+  }
+
+  function getOnlineRollAnimation(turn) {
+    const animation = onlineState.rollAnimation;
+    if (!animation || !turn) {
+      return null;
+    }
+    if (animation.roomId !== onlineState.session?.roomId || animation.playerId !== turn.playerId) {
+      return null;
+    }
+    return animation;
   }
 
   function renderOnlineResults(results) {
@@ -1460,7 +1481,7 @@
     $("#copy-room-code", app)?.addEventListener("click", copyOnlineRoomCode);
     $("#start-online-game", app)?.addEventListener("click", () => performOnlineAction("schogge_start_game", {}));
     $("#online-begin-round", app)?.addEventListener("click", () => performOnlineAction("schogge_begin_round", {}));
-    $("#online-roll", app)?.addEventListener("click", () => performOnlineAction("schogge_roll", {}));
+    $("#online-roll", app)?.addEventListener("click", performOnlineRoll);
     $("#online-take-result", app)?.addEventListener("click", () => performOnlineAction("schogge_accept_turn", {}));
     $("#online-continue", app)?.addEventListener("click", () => performOnlineAction("schogge_continue_after_result", {}));
     $("#online-next-round", app)?.addEventListener("click", () => performOnlineAction("schogge_next_round", {}));
@@ -1610,6 +1631,8 @@
   }
 
   function clearOnlineRealtime() {
+    onlineState.rollAnimation = null;
+    clearActiveRollTimers();
     if (onlineState.channel && onlineState.client) {
       onlineState.client.removeChannel(onlineState.channel);
     }
@@ -1646,6 +1669,92 @@
       });
       await loadOnlineRoom();
     });
+  }
+
+  function performOnlineRoll() {
+    const session = onlineState.session;
+    const game = getOnlineGameState();
+    const round = game?.currentRound;
+    const turn = game?.currentTurn;
+    if (!session || !round || !turn || onlineState.rollAnimation) {
+      return;
+    }
+    if (turn.playerId !== session.playerId || !canRollTurn(round, turn)) {
+      return;
+    }
+
+    const wasForced = Boolean(turn.forceReroll);
+    const rollingIndices = getRollingIndices(turn, wasForced);
+    if (!rollingIndices.length) {
+      return;
+    }
+
+    startOnlineRollAnimation({
+      session,
+      turn,
+      rollingIndices,
+      wasForced,
+      throwNumber: getNextThrowNumber(turn),
+    });
+  }
+
+  function startOnlineRollAnimation({ session, turn, rollingIndices, wasForced, throwNumber }) {
+    clearActiveRollTimers();
+    const token = createId();
+    const reduceMotion = prefersReducedMotion();
+    const duration = reduceMotion ? REDUCED_ROLL_ANIMATION_MS : ROLL_ANIMATION_MS;
+    const frameMs = reduceMotion ? REDUCED_ROLL_FRAME_MS : ROLL_FRAME_MS;
+
+    onlineState.rollAnimation = {
+      token,
+      roomId: session.roomId,
+      playerId: session.playerId,
+      rollingIndices,
+      rollingDice: createRollingDisplayDice(turn, rollingIndices),
+      message: wasForced ? `Pflichtwurf läuft. Wurf ${throwNumber}.` : `Würfel rollen. Wurf ${throwNumber}.`,
+    };
+    setOnlineError("");
+    render();
+
+    activeRollIntervalId = setInterval(() => {
+      if (!onlineState.rollAnimation || onlineState.rollAnimation.token !== token) {
+        clearActiveRollTimers();
+        return;
+      }
+      onlineState.rollAnimation.rollingDice = createRollingDisplayDice(turn, rollingIndices);
+      render();
+    }, frameMs);
+
+    activeRollTimeoutId = setTimeout(() => {
+      finishOnlineRollAfterAnimation(token, session);
+    }, duration);
+  }
+
+  async function finishOnlineRollAfterAnimation(token, session) {
+    clearActiveRollTimers();
+    if (!onlineState.rollAnimation || onlineState.rollAnimation.token !== token) {
+      return;
+    }
+
+    onlineState.rollAnimation.message = "Wurf wird übernommen.";
+    setOnlineLoading(true);
+    render();
+
+    try {
+      await callOnlineRpc("schogge_roll", {
+        room_id: session.roomId,
+        player_id: session.playerId,
+        player_token: session.playerToken,
+      });
+      onlineState.rollAnimation = null;
+      await loadOnlineRoom();
+    } catch (error) {
+      onlineState.rollAnimation = null;
+      setOnlineError(error.message || "Online-Aktion fehlgeschlagen.");
+    } finally {
+      setOnlineLoading(false);
+      render();
+    }
   }
 
   async function copyOnlineRoomCode() {
