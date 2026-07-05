@@ -368,7 +368,7 @@ test("PflichtwÃ¼rfe erhÃ¶hen das regulÃ¤re Limit nicht und blockieren Ãœ
   assert.equal(canTakeTurnResult(roundState(null), openForcedTurn), false);
   assert.equal(canRollTurn(roundState(null), openForcedTurn), true);
   assert.equal(canTakeTurnResult(roundState(null), completedForcedTurn), true);
-  assert.equal(limit, 2);
+  assert.equal(limit, 3);
   assert.equal(shouldAutoAcceptTurn(round, turnState({ playerId: "B", regularRollCount: 2, rollCount: 4 })), false);
   assert.equal(canTakeTurnResult(round, turnState({ playerId: "B", regularRollCount: 2, rollCount: 4 })), true);
 });
@@ -438,6 +438,38 @@ test("Worst-first Sortierung nutzt Zeit-Tie-Break", () => {
   ]);
 
   assert.equal(sorted[0].playerId, "spät");
+});
+
+test("Startspieler-Limit zaehlt Pflichtwurf als zweiten Wurf", () => {
+  const starterTurn = turnState({ regularRollCount: 1, actualThrowCount: 2, rollCount: 2 });
+  const limit = deriveStarterRegularLimit(starterTurn);
+  const round = roundState(limit);
+
+  assert.equal(limit, 2);
+  assert.equal(getTurnRegularLimit(round, turnState({ playerId: "B" })), 2);
+  assert.equal(canRollTurn(round, turnState({ playerId: "B", regularRollCount: 1, actualThrowCount: 1, rollCount: 1 })), true);
+  assert.equal(canRollTurn(round, turnState({ playerId: "B", regularRollCount: 2, actualThrowCount: 2, rollCount: 2 })), false);
+});
+
+test("Startspieler-Limit zaehlt Pflichtwurf als dritten Wurf", () => {
+  const starterTurn = turnState({ regularRollCount: 2, actualThrowCount: 3, rollCount: 3 });
+  const limit = deriveStarterRegularLimit(starterTurn);
+  const round = roundState(limit);
+
+  assert.equal(limit, 3);
+  assert.equal(getTurnRegularLimit(round, turnState({ playerId: "B" })), 3);
+  assert.equal(canRollTurn(round, turnState({ playerId: "B", regularRollCount: 2, actualThrowCount: 2, rollCount: 2 })), true);
+  assert.equal(canRollTurn(round, turnState({ playerId: "B", regularRollCount: 3, actualThrowCount: 3, rollCount: 3 })), false);
+});
+
+test("Startspieler-Limit bleibt nach Pflichtwurf als viertem Wurf bei drei", () => {
+  const starterTurn = turnState({ regularRollCount: 3, actualThrowCount: 4, rollCount: 4 });
+  const limit = deriveStarterRegularLimit(starterTurn);
+  const round = roundState(limit);
+
+  assert.equal(limit, 3);
+  assert.equal(getTurnRegularLimit(round, turnState({ playerId: "B" })), 3);
+  assert.equal(canRollTurn(round, turnState({ playerId: "B", regularRollCount: 3, actualThrowCount: 3, rollCount: 3 })), false);
 });
 
 console.log("Alle Regeltests bestanden.");

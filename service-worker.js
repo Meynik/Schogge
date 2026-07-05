@@ -1,9 +1,10 @@
-const CACHE_NAME = "schogge-cache-v9";
+const CACHE_NAME = "schogge-cache-v11";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./supabase-config.js",
   "./manifest.webmanifest",
   "./icon.svg",
 ];

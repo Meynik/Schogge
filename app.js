@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = "schogge.state.v1";
   const HISTORY_KEY = "schogge.history.v1";
+  const ONLINE_SESSION_KEY = "schogge.online.session.v1";
   const MAX_HISTORY = 40;
   const ROLL_ANIMATION_MS = 880;
   const ROLL_FRAME_MS = 90;
@@ -308,11 +309,11 @@
   }
 
   function deriveStarterRegularLimit(turn) {
-    const regularRollCount = getRegularRollCount(turn);
-    if (regularRollCount < 1) {
-      throw new Error("Der Startspieler muss mindestens einmal regulär würfeln.");
+    const actualThrowCount = getActualThrowCount(turn);
+    if (actualThrowCount < 1) {
+      throw new Error("Der Startspieler muss mindestens einmal würfeln.");
     }
-    return Math.min(3, regularRollCount);
+    return Math.min(3, actualThrowCount);
   }
 
   function isStartPlayerTurn(round, turn) {
@@ -406,6 +407,7 @@
     pot: 0,
     nextStarterId: null,
     screen: "setup",
+    setupMode: "menu",
     panel: null,
     currentRound: null,
     currentTurn: null,
@@ -415,6 +417,17 @@
   });
 
   let state = loadState();
+  let onlineState = {
+    view: "menu",
+    room: null,
+    players: [],
+    session: loadOnlineSession(),
+    error: "",
+    notice: "",
+    loading: false,
+    channel: null,
+    client: null,
+  };
   let activeRollIntervalId = null;
   let activeRollTimeoutId = null;
 
@@ -423,6 +436,23 @@
       return root.crypto.randomUUID();
     }
     return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function loadOnlineSession() {
+    try {
+      return JSON.parse(localStorage.getItem(ONLINE_SESSION_KEY)) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveOnlineSession(session) {
+    onlineState.session = session;
+    if (session) {
+      localStorage.setItem(ONLINE_SESSION_KEY, JSON.stringify(session));
+    } else {
+      localStorage.removeItem(ONLINE_SESSION_KEY);
+    }
   }
 
   function loadHistory() {
@@ -493,6 +523,70 @@
     return Math.floor(Math.random() * 6) + 1;
   }
 
+  function getSupabaseConfig() {
+    return root.SCHOGGE_SUPABASE_CONFIG || {};
+  }
+
+  function isSupabaseConfigured() {
+    const config = getSupabaseConfig();
+    return Boolean(config.url && config.anonKey && root.supabase?.createClient);
+  }
+
+  function getSupabaseClient() {
+    if (!isSupabaseConfigured()) {
+      throw new Error("Supabase ist noch nicht konfiguriert.");
+    }
+    if (!onlineState.client) {
+      const config = getSupabaseConfig();
+      onlineState.client = root.supabase.createClient(config.url, config.anonKey);
+    }
+    return onlineState.client;
+  }
+
+  function setOnlineError(message) {
+    onlineState.error = message || "";
+    onlineState.notice = "";
+  }
+
+  function setOnlineNotice(message) {
+    onlineState.notice = message || "";
+    onlineState.error = "";
+  }
+
+  function setOnlineLoading(loading) {
+    onlineState.loading = Boolean(loading);
+  }
+
+  function normalizeRoomCode(code) {
+    return String(code || "").trim().toUpperCase().replace(/\s+/g, "");
+  }
+
+  function currentOnlinePlayer() {
+    return onlineState.players.find((player) => player.id === onlineState.session?.playerId) || null;
+  }
+
+  function isOnlineHost() {
+    return Boolean(onlineState.room?.host_player_id && onlineState.room.host_player_id === onlineState.session?.playerId);
+  }
+
+  function getOnlineGameState() {
+    return onlineState.room?.game_state || null;
+  }
+
+  function onlinePlayerName(playerId) {
+    const player = onlineState.players.find((entry) => entry.id === playerId);
+    return player ? player.name : "Unbekannt";
+  }
+
+  async function callOnlineRpc(name, payload) {
+    const client = getSupabaseClient();
+    const { data, error } = await client.rpc(name, payload);
+    if (error) {
+      throw new Error(error.message || "Die Online-Aktion ist fehlgeschlagen.");
+    }
+    return data;
+  }
+
   function currentPlayer() {
     if (!state.currentTurn) {
       return null;
@@ -539,6 +633,9 @@
     if (activePanel === "history") {
       return renderHistoryView();
     }
+    if (state.screen === "online") {
+      return renderOnlineView();
+    }
     if (state.screen === "roundStart") {
       return renderRoundStartView();
     }
@@ -555,6 +652,9 @@
   }
 
   function renderSetupView() {
+    if (!state.gameStarted && state.setupMode === "menu") {
+      return renderModeSelectionView();
+    }
     const canAdd = state.players.length < 6;
     const canRemove = state.players.length > 2;
     return `
@@ -597,6 +697,349 @@
     `;
   }
 
+  function renderModeSelectionView() {
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Spielmodus</p>
+          <h2>Wie wollt ihr Schogge spielen?</h2>
+          <div class="stat-grid">
+            <div class="stat"><span>Lokal</span><strong>1 GerÃ¤t</strong></div>
+            <div class="stat"><span>Online</span><strong>Raumcode</strong></div>
+            <div class="stat"><span>Konten</span><strong>Keine</strong></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="surface">
+        <div class="actions vertical">
+          <button class="button" id="choose-local">Lokales Spiel</button>
+          <button class="button secondary" id="choose-online-create">Online-Spiel erstellen</button>
+          <button class="button secondary" id="choose-online-join">Online-Spiel beitreten</button>
+        </div>
+        ${
+          onlineState.session
+            ? `<button class="button gold" id="resume-online">Online-Raum ${escapeHtml(onlineState.session.roomCode)} wieder Ã¶ffnen</button>`
+            : ""
+        }
+      </section>
+    `;
+  }
+
+  function renderOnlineView() {
+    if (onlineState.view === "create") {
+      return renderOnlineCreateView();
+    }
+    if (onlineState.view === "join") {
+      return renderOnlineJoinView();
+    }
+    if (onlineState.view === "lobby") {
+      return renderOnlineLobbyView();
+    }
+    if (onlineState.view === "game") {
+      return renderOnlineGameView();
+    }
+    return renderModeSelectionView();
+  }
+
+  function renderOnlineMessages() {
+    return `
+      ${onlineState.error ? `<div class="status-line aus">${escapeHtml(onlineState.error)}</div>` : ""}
+      ${onlineState.notice ? `<div class="status-line confirm">${escapeHtml(onlineState.notice)}</div>` : ""}
+      ${
+        !isSupabaseConfigured()
+          ? `<div class="status-line force">Supabase ist noch nicht eingerichtet. Trage URL und Anon Key in supabase-config.js ein und spiele das SQL-Schema in Supabase ein.</div>`
+          : ""
+      }
+    `;
+  }
+
+  function renderOnlineCreateView() {
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Online-Spiel erstellen</p>
+          <h2>Private Lobby mit Raumcode.</h2>
+        </div>
+      </section>
+      <section class="surface">
+        ${renderOnlineMessages()}
+        <label class="field">
+          <span>Dein Name</span>
+          <input id="online-create-name" maxlength="32" autocomplete="name" placeholder="Name">
+        </label>
+        <div class="actions">
+          <button class="button" id="create-online-room" ${onlineState.loading || !isSupabaseConfigured() ? "disabled" : ""}>Raum erstellen</button>
+          <button class="button secondary" id="back-to-modes">ZurÃ¼ck</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderOnlineJoinView() {
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Online-Spiel beitreten</p>
+          <h2>Raumcode und Name eingeben.</h2>
+        </div>
+      </section>
+      <section class="surface">
+        ${renderOnlineMessages()}
+        <label class="field">
+          <span>Dein Name</span>
+          <input id="online-join-name" maxlength="32" autocomplete="name" placeholder="Name">
+        </label>
+        <label class="field">
+          <span>Raumcode</span>
+          <input id="online-room-code" maxlength="16" autocapitalize="characters" autocomplete="off" placeholder="SCHOGGE42">
+        </label>
+        <div class="actions">
+          <button class="button" id="join-online-room" ${onlineState.loading || !isSupabaseConfigured() ? "disabled" : ""}>Beitreten</button>
+          <button class="button secondary" id="back-to-modes">ZurÃ¼ck</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderOnlineLobbyView() {
+    const room = onlineState.room;
+    const canStart = isOnlineHost() && onlineState.players.length >= 2 && room?.status === "lobby";
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Online-Lobby</p>
+          <h2>${room ? `Raum ${escapeHtml(room.code)}` : "Lobby wird geladen"}</h2>
+          <div class="stat-grid">
+            <div class="stat"><span>Spieler</span><strong>${onlineState.players.length}/6</strong></div>
+            <div class="stat"><span>Status</span><strong>${escapeHtml(room?.status || "-")}</strong></div>
+            <div class="stat"><span>Du</span><strong>${escapeHtml(currentOnlinePlayer()?.name || "-")}</strong></div>
+          </div>
+        </div>
+      </section>
+      <section class="surface">
+        ${renderOnlineMessages()}
+        <div class="room-code">
+          <span>Raumcode</span>
+          <strong>${escapeHtml(room?.code || onlineState.session?.roomCode || "-")}</strong>
+        </div>
+        <div class="actions">
+          <button class="button secondary" id="copy-room-code" ${room?.code ? "" : "disabled"}>Code kopieren</button>
+          <button class="button" id="start-online-game" ${canStart ? "" : "disabled"}>Spiel starten</button>
+          <button class="button warn" id="leave-online-room">Raum verlassen</button>
+        </div>
+      </section>
+      <section class="surface">
+        <h2>Spielerliste</h2>
+        ${renderOnlinePlayerList()}
+      </section>
+    `;
+  }
+
+  function renderOnlinePlayerList() {
+    if (!onlineState.players.length) {
+      return `<p class="muted">Noch keine Spieler geladen.</p>`;
+    }
+    return `
+      <ul class="player-list">
+        ${onlineState.players
+          .map((player) => {
+            const isHost = onlineState.room?.host_player_id === player.id;
+            const isMe = onlineState.session?.playerId === player.id;
+            const isOnline = player.presence_state !== "offline";
+            return `
+              <li class="player-row online-player-row">
+                <div>
+                  <strong>${escapeHtml(player.name)}</strong>
+                  <span class="result-meta">${isHost ? "Host" : "Mitspieler"}${isMe ? " Â· Du" : ""} Â· ${isOnline ? "online" : "offline"}</span>
+                </div>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
+  }
+
+  function renderOnlineGameView() {
+    const game = getOnlineGameState();
+    if (!onlineState.room || !game) {
+      return renderOnlineLobbyView();
+    }
+    const currentTurn = game.currentTurn || null;
+    const round = game.currentRound || null;
+    const currentPlayerId = currentTurn?.playerId || null;
+    const myTurn = currentPlayerId === onlineState.session?.playerId;
+    const activeName = currentPlayerId ? onlinePlayerName(currentPlayerId) : "-";
+
+    if (game.screen === "result") {
+      return renderOnlineResultView(game);
+    }
+    if (game.screen === "summary") {
+      return renderOnlineSummaryView(game);
+    }
+    if (game.screen === "roundStart") {
+      return renderOnlineRoundStartView(game);
+    }
+
+    const score = currentTurn?.dice?.every(Boolean) ? scoreCombination(currentTurn.dice) : null;
+    const regularLimit = round && currentTurn ? getTurnRegularLimit(round, currentTurn) : 3;
+    const canRoll = myTurn && round && currentTurn && canRollTurn(round, currentTurn);
+    const canTake = myTurn && round && currentTurn && canTakeTurnResult(round, currentTurn);
+    const guidance = myTurn ? "Du bist dran." : `${activeName} ist dran.`;
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Online-Spiel ${onlineState.room.code ? `Â· ${escapeHtml(onlineState.room.code)}` : ""}</p>
+          <h2>${myTurn ? "Du bist dran" : `${escapeHtml(activeName)} wÃ¼rfelt`}</h2>
+          <div class="stat-grid">
+            <div class="stat"><span>WÃ¼rfe</span><strong>${getActualThrowCount(currentTurn)}/${regularLimit}</strong></div>
+            <div class="stat"><span>Pott</span><strong>${game.pot || 0}</strong></div>
+            <div class="stat"><span>Runde</span><strong>${game.roundNumber || 1}</strong></div>
+          </div>
+        </div>
+      </section>
+      <section class="surface dice-zone">
+        ${renderOnlineMessages()}
+        <div class="status-line ${currentTurn?.forceReroll ? "force" : ""}">${escapeHtml(currentTurn?.message || guidance)}</div>
+        ${renderLowestScoreField(round?.results || [])}
+        <div class="dice-row" aria-label="WÃ¼rfel">
+          ${(currentTurn?.dice || [null, null, null])
+            .map((die, index) =>
+              renderOnlineDie({
+                value: die,
+                index,
+                held: currentTurn?.held?.[index],
+                locked: currentTurn?.forceReroll,
+                disabled: !myTurn || currentTurn?.forceReroll,
+              }),
+            )
+            .join("")}
+        </div>
+        <div class="pill-row">
+          ${score ? `<span class="pill ${score.category === "schogge_aus" ? "warn" : "info"}">${escapeHtml(score.label)}</span>` : ""}
+          ${currentTurn?.forceReroll ? `<span class="pill gold">Pflichtwurf</span>` : ""}
+          ${myTurn ? `<span class="pill good">Du bist dran</span>` : `<span class="pill info">${escapeHtml(activeName)} ist dran</span>`}
+        </div>
+        <div class="actions">
+          <button class="button ${currentTurn?.forceReroll ? "gold" : ""}" id="online-roll" ${canRoll ? "" : "disabled"}>
+            ${currentTurn?.forceReroll ? `Pflichtwurf (Wurf ${getNextThrowNumber(currentTurn)})` : `WÃ¼rfeln (Wurf ${getNextThrowNumber(currentTurn)})`}
+          </button>
+          <button class="button gold" id="online-take-result" ${canTake ? "" : "disabled"}>Ergebnis bestÃ¤tigen</button>
+          <button class="button warn" id="leave-online-room">Raum verlassen</button>
+        </div>
+      </section>
+      <section class="surface">
+        <h2>Aktuelle Ergebnisse</h2>
+        ${renderOnlineResults(round?.results || [])}
+      </section>
+    `;
+  }
+
+  function renderOnlineDie({ value, index, held, locked, disabled }) {
+    const pips = value
+      ? `<span class="die-pips pips-${value}">${Array.from({ length: value }, () => "<span></span>").join("")}</span>`
+      : `<span class="die-empty">?</span>`;
+    return `
+      <button
+        class="die ${held ? "is-held" : ""} ${locked ? "is-locked" : ""}"
+        data-online-toggle-die="${index}"
+        aria-label="WÃ¼rfel ${index + 1}${held ? ", gehalten" : ""}"
+        aria-pressed="${held ? "true" : "false"}"
+        ${!value || locked || disabled ? "disabled" : ""}
+      >
+        ${pips}
+      </button>
+    `;
+  }
+
+  function renderOnlineResults(results) {
+    if (!results.length) {
+      return `<p class="muted">Noch keine Ergebnisse.</p>`;
+    }
+    return `
+      <ul class="result-list">
+        ${results
+          .map((result) => {
+            const resultLabel = getResultDisplayName(result, results);
+            return `
+              <li class="result-row">
+                <div class="result-main">
+                  <strong>${escapeHtml(result.playerName)}</strong>
+                  <span class="result-meta">${escapeHtml(resultLabel)} Â· ${formatResultThrowMeta(result)}</span>
+                </div>
+                <div class="score-badge">${escapeHtml(resultLabel)}</div>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
+  }
+
+  function renderOnlineRoundStartView(game) {
+    const canBegin = isOnlineHost() || game.nextStarterId === onlineState.session?.playerId;
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Online-Runde</p>
+          <h2>${escapeHtml(onlinePlayerName(game.nextStarterId))} beginnt.</h2>
+        </div>
+      </section>
+      <section class="surface">
+        ${renderOnlineMessages()}
+        <p class="muted">Der Startspieler bestimmt das Limit durch tatsÃ¤chlich ausgefÃ¼hrte WÃ¼rfe, hÃ¶chstens drei.</p>
+        <div class="actions">
+          <button class="button" id="online-begin-round" ${canBegin ? "" : "disabled"}>Runde starten</button>
+          <button class="button warn" id="leave-online-room">Raum verlassen</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderOnlineResultView(game) {
+    const result = game.lastResult;
+    const results = game.currentRound?.results || [result];
+    const resultLabel = getResultDisplayName(result, results);
+    const canContinue = isOnlineHost() || onlineState.session?.playerId === result?.playerId;
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Zugergebnis</p>
+          <h2>${escapeHtml(result?.playerName || "-")}: ${escapeHtml(resultLabel)}</h2>
+        </div>
+      </section>
+      <section class="surface">
+        ${renderOnlineMessages()}
+        <div class="status-line">${escapeHtml(result?.message || "Ergebnis Ã¼bernommen.")}</div>
+        <div class="actions">
+          <button class="button" id="online-continue" ${canContinue ? "" : "disabled"}>${game.currentRoundDone ? "Zur Auswertung" : "NÃ¤chster Spieler"}</button>
+          <button class="button warn" id="leave-online-room">Raum verlassen</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderOnlineSummaryView(game) {
+    const outcome = game.lastRound?.outcome;
+    return `
+      <section class="board">
+        <div class="board-inner">
+          <p class="eyebrow">Rundenauswertung</p>
+          <h2>${escapeHtml(outcome ? outcomeText(outcome) : "Runde beendet.")}</h2>
+        </div>
+      </section>
+      <section class="surface">
+        ${renderOnlineMessages()}
+        ${renderOnlineResults(game.lastRound?.results || [])}
+        <div class="actions">
+          <button class="button" id="online-next-round" ${isOnlineHost() ? "" : "disabled"}>NÃ¤chste Runde</button>
+          <button class="button warn" id="leave-online-room">Raum verlassen</button>
+        </div>
+      </section>
+    `;
+  }
+
   function renderRoundStartView() {
     const starter = playerName(state.nextStarterId);
     return `
@@ -614,7 +1057,7 @@
 
       <section class="surface">
         <h2>Runde starten</h2>
-        <p class="muted">Der Startspieler würfelt zuerst. Seine genutzten regulären Würfe legen anschließend das Limit für alle anderen fest.</p>
+        <p class="muted">Der Startspieler würfelt zuerst. Seine tatsächlich ausgeführten Würfe legen anschließend das Limit für alle anderen fest, höchstens jedoch drei.</p>
         <button class="button" id="begin-round">Runde starten</button>
       </section>
     `;
@@ -875,7 +1318,7 @@
 
   function turnGuidance(round, turn) {
     if (isStartPlayerSettingLimit(round, turn)) {
-      return "Du bestimmst das Wurflimit für diese Runde. Nach deinem Zug gilt deine genutzte Anzahl an regulären Würfen für alle Spieler.";
+      return "Du bestimmst das Wurflimit für diese Runde. Nach deinem Zug gilt deine Anzahl tatsächlich ausgeführter Würfe für alle Spieler, höchstens jedoch drei.";
     }
     return `Maximal ${round.regularLimit} Würfe, festgelegt durch ${round.startPlayerName}.`;
   }
@@ -906,6 +1349,8 @@
 
     if (state.screen === "setup") {
       bindSetupActions(app);
+    } else if (state.screen === "online") {
+      bindOnlineActions(app);
     } else if (state.screen === "roundStart") {
       bindRoundStartActions(app);
     } else if (state.screen === "turn") {
@@ -922,6 +1367,21 @@
   }
 
   function bindSetupActions(app) {
+    $("#choose-local", app)?.addEventListener("click", () => {
+      state.setupMode = "local";
+      state.screen = "setup";
+      render();
+    });
+    $("#choose-online-create", app)?.addEventListener("click", () => {
+      openOnlineView("create");
+    });
+    $("#choose-online-join", app)?.addEventListener("click", () => {
+      openOnlineView("join");
+    });
+    $("#resume-online", app)?.addEventListener("click", () => {
+      resumeOnlineSession();
+    });
+
     $$("[data-player-name]", app).forEach((input) => {
       input.addEventListener("input", () => {
         const player = state.players.find((entry) => entry.id === input.dataset.playerName);
@@ -963,6 +1423,237 @@
 
   function bindRoundStartActions(app) {
     $("#begin-round", app)?.addEventListener("click", beginRound);
+  }
+
+  function bindOnlineActions(app) {
+    $("#back-to-modes", app)?.addEventListener("click", () => {
+      openModeMenu();
+    });
+    $("#create-online-room", app)?.addEventListener("click", createOnlineRoom);
+    $("#join-online-room", app)?.addEventListener("click", joinOnlineRoom);
+    $("#copy-room-code", app)?.addEventListener("click", copyOnlineRoomCode);
+    $("#start-online-game", app)?.addEventListener("click", () => performOnlineAction("schogge_start_game", {}));
+    $("#online-begin-round", app)?.addEventListener("click", () => performOnlineAction("schogge_begin_round", {}));
+    $("#online-roll", app)?.addEventListener("click", () => performOnlineAction("schogge_roll", {}));
+    $("#online-take-result", app)?.addEventListener("click", () => performOnlineAction("schogge_accept_turn", {}));
+    $("#online-continue", app)?.addEventListener("click", () => performOnlineAction("schogge_continue_after_result", {}));
+    $("#online-next-round", app)?.addEventListener("click", () => performOnlineAction("schogge_next_round", {}));
+    $("#leave-online-room", app)?.addEventListener("click", leaveOnlineRoom);
+
+    $$("[data-online-toggle-die]", app).forEach((button) => {
+      button.addEventListener("click", () => {
+        performOnlineAction("schogge_toggle_die", { die_index: Number(button.dataset.onlineToggleDie) });
+      });
+    });
+  }
+
+  function openModeMenu() {
+    clearOnlineRealtime();
+    setOnlineError("");
+    onlineState.view = "menu";
+    state.screen = "setup";
+    state.setupMode = "menu";
+    render();
+  }
+
+  function openOnlineView(view) {
+    state.screen = "online";
+    state.panel = null;
+    onlineState.view = view;
+    setOnlineError("");
+    render();
+  }
+
+  async function createOnlineRoom() {
+    const name = $("#online-create-name")?.value.trim();
+    if (!name) {
+      setOnlineError("Bitte gib deinen Namen ein.");
+      render();
+      return;
+    }
+    await runOnline(async () => {
+      const data = await callOnlineRpc("schogge_create_room", { player_name: name });
+      adoptOnlineSession(data);
+      setOnlineNotice("Online-Raum erstellt.");
+      await loadOnlineRoom();
+    });
+  }
+
+  async function joinOnlineRoom() {
+    const name = $("#online-join-name")?.value.trim();
+    const code = normalizeRoomCode($("#online-room-code")?.value);
+    if (!name || !code) {
+      setOnlineError("Bitte gib Name und Raumcode ein.");
+      render();
+      return;
+    }
+    await runOnline(async () => {
+      const data = await callOnlineRpc("schogge_join_room", { room_code: code, player_name: name });
+      adoptOnlineSession(data);
+      setOnlineNotice("Du bist der Lobby beigetreten.");
+      await loadOnlineRoom();
+    });
+  }
+
+  function adoptOnlineSession(data) {
+    const session = {
+      roomId: data.room_id,
+      roomCode: data.room_code,
+      playerId: data.player_id,
+      playerToken: data.player_token,
+    };
+    saveOnlineSession(session);
+    onlineState.view = data.room_status === "playing" ? "game" : "lobby";
+    state.screen = "online";
+    state.panel = null;
+  }
+
+  async function resumeOnlineSession() {
+    if (!onlineState.session) {
+      openOnlineView("join");
+      return;
+    }
+    openOnlineView("lobby");
+    await runOnline(loadOnlineRoom);
+  }
+
+  async function runOnline(work) {
+    try {
+      setOnlineLoading(true);
+      setOnlineError("");
+      render();
+      await work();
+    } catch (error) {
+      setOnlineError(error.message || "Online-Aktion fehlgeschlagen.");
+    } finally {
+      setOnlineLoading(false);
+      render();
+    }
+  }
+
+  async function loadOnlineRoom() {
+    const session = onlineState.session;
+    if (!session) {
+      throw new Error("Keine Online-Sitzung gefunden.");
+    }
+    const client = getSupabaseClient();
+    const { data: room, error: roomError } = await client
+      .from("schogge_rooms")
+      .select("*")
+      .eq("id", session.roomId)
+      .single();
+    if (roomError || !room) {
+      throw new Error("Der Online-Raum wurde nicht gefunden oder ist abgelaufen.");
+    }
+    const { data: players, error: playersError } = await client
+      .from("schogge_players")
+      .select("*")
+      .eq("room_id", session.roomId)
+      .order("seat_index", { ascending: true });
+    if (playersError) {
+      throw new Error("Die Spielerliste konnte nicht geladen werden.");
+    }
+    onlineState.room = room;
+    onlineState.players = players || [];
+    onlineState.view = room.status === "lobby" ? "lobby" : "game";
+    subscribeOnlineRoom();
+  }
+
+  function subscribeOnlineRoom() {
+    const session = onlineState.session;
+    if (!session || onlineState.channel) {
+      return;
+    }
+    const client = getSupabaseClient();
+    onlineState.channel = client
+      .channel(`schogge-room-${session.roomId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "schogge_rooms", filter: `id=eq.${session.roomId}` }, () => {
+        loadOnlineRoom().catch((error) => {
+          setOnlineError(error.message);
+          render();
+        });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "schogge_players", filter: `room_id=eq.${session.roomId}` }, () => {
+        loadOnlineRoom().catch((error) => {
+          setOnlineError(error.message);
+          render();
+        });
+      })
+      .subscribe();
+    touchOnlinePresence();
+  }
+
+  function clearOnlineRealtime() {
+    if (onlineState.channel && onlineState.client) {
+      onlineState.client.removeChannel(onlineState.channel);
+    }
+    onlineState.channel = null;
+  }
+
+  async function touchOnlinePresence() {
+    if (!onlineState.session || !isSupabaseConfigured()) {
+      return;
+    }
+    try {
+      await callOnlineRpc("schogge_touch_presence", {
+        player_id: onlineState.session.playerId,
+        player_token: onlineState.session.playerToken,
+      });
+    } catch {
+      // Eine fehlgeschlagene Anwesenheitsmeldung darf das Spiel nicht blockieren.
+    }
+  }
+
+  async function performOnlineAction(actionName, payload) {
+    const session = onlineState.session;
+    if (!session) {
+      setOnlineError("Du bist keinem Online-Raum beigetreten.");
+      render();
+      return;
+    }
+    await runOnline(async () => {
+      await callOnlineRpc(actionName, {
+        ...payload,
+        room_id: session.roomId,
+        player_id: session.playerId,
+        player_token: session.playerToken,
+      });
+      await loadOnlineRoom();
+    });
+  }
+
+  async function copyOnlineRoomCode() {
+    const code = onlineState.room?.code || onlineState.session?.roomCode;
+    if (!code) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(code);
+      setOnlineNotice("Raumcode kopiert.");
+    } catch {
+      setOnlineNotice(`Raumcode: ${code}`);
+    }
+    render();
+  }
+
+  async function leaveOnlineRoom() {
+    const session = onlineState.session;
+    if (session && isSupabaseConfigured()) {
+      try {
+        await callOnlineRpc("schogge_leave_room", {
+          room_id: session.roomId,
+          player_id: session.playerId,
+          player_token: session.playerToken,
+        });
+      } catch {
+        // Lokales Verlassen soll auch funktionieren, wenn die Verbindung weg ist.
+      }
+    }
+    clearOnlineRealtime();
+    saveOnlineSession(null);
+    onlineState.room = null;
+    onlineState.players = [];
+    openModeMenu();
   }
 
   function bindTurnActions(app) {
@@ -1359,5 +2050,22 @@
     });
   }
 
-  document.addEventListener("DOMContentLoaded", render);
+  async function initializeOnlineFromSession() {
+    if (!onlineState.session || !isSupabaseConfigured()) {
+      render();
+      return;
+    }
+    state.screen = "online";
+    state.panel = null;
+    onlineState.view = "lobby";
+    try {
+      await loadOnlineRoom();
+      setOnlineNotice("Online-Raum wieder verbunden.");
+    } catch (error) {
+      setOnlineError(error.message);
+    }
+    render();
+  }
+
+  document.addEventListener("DOMContentLoaded", initializeOnlineFromSession);
 })(typeof globalThis !== "undefined" ? globalThis : this);
