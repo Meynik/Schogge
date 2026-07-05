@@ -703,10 +703,10 @@
         <div class="board-inner">
           <p class="eyebrow">Spielmodus</p>
           <h2>Wie wollt ihr Schogge spielen?</h2>
-          <div class="stat-grid">
-            <div class="stat"><span>Lokal</span><strong>1 GerÃ¤t</strong></div>
-            <div class="stat"><span>Online</span><strong>Raumcode</strong></div>
-            <div class="stat"><span>Konten</span><strong>Keine</strong></div>
+          <div class="stat-grid mode-grid">
+            <div class="stat mode-stat"><span>Lokal</span><strong>1 Gerät</strong></div>
+            <div class="stat mode-stat"><span>Online</span><strong>Raumcode</strong></div>
+            <div class="stat mode-stat"><span>Konten</span><strong>Keine</strong></div>
           </div>
         </div>
       </section>
@@ -719,7 +719,7 @@
         </div>
         ${
           onlineState.session
-            ? `<button class="button gold" id="resume-online">Online-Raum ${escapeHtml(onlineState.session.roomCode)} wieder Ã¶ffnen</button>`
+            ? `<button class="button gold" id="resume-online">Online-Raum ${escapeHtml(onlineState.session.roomCode)} wieder öffnen</button>`
             : ""
         }
       </section>
@@ -770,7 +770,7 @@
         </label>
         <div class="actions">
           <button class="button" id="create-online-room" ${onlineState.loading || !isSupabaseConfigured() ? "disabled" : ""}>Raum erstellen</button>
-          <button class="button secondary" id="back-to-modes">ZurÃ¼ck</button>
+          <button class="button secondary" id="back-to-modes">Zurück</button>
         </div>
       </section>
     `;
@@ -796,7 +796,7 @@
         </label>
         <div class="actions">
           <button class="button" id="join-online-room" ${onlineState.loading || !isSupabaseConfigured() ? "disabled" : ""}>Beitreten</button>
-          <button class="button secondary" id="back-to-modes">ZurÃ¼ck</button>
+          <button class="button secondary" id="back-to-modes">Zurück</button>
         </div>
       </section>
     `;
@@ -851,7 +851,7 @@
               <li class="player-row online-player-row">
                 <div>
                   <strong>${escapeHtml(player.name)}</strong>
-                  <span class="result-meta">${isHost ? "Host" : "Mitspieler"}${isMe ? " Â· Du" : ""} Â· ${isOnline ? "online" : "offline"}</span>
+                  <span class="result-meta">${isHost ? "Host" : "Mitspieler"}${isMe ? " · Du" : ""} · ${isOnline ? "online" : "offline"}</span>
                 </div>
               </li>
             `;
@@ -890,10 +890,10 @@
     return `
       <section class="board">
         <div class="board-inner">
-          <p class="eyebrow">Online-Spiel ${onlineState.room.code ? `Â· ${escapeHtml(onlineState.room.code)}` : ""}</p>
-          <h2>${myTurn ? "Du bist dran" : `${escapeHtml(activeName)} wÃ¼rfelt`}</h2>
+          <p class="eyebrow">Online-Spiel ${onlineState.room.code ? `· ${escapeHtml(onlineState.room.code)}` : ""}</p>
+          <h2>${myTurn ? "Du bist dran" : `${escapeHtml(activeName)} würfelt`}</h2>
           <div class="stat-grid">
-            <div class="stat"><span>WÃ¼rfe</span><strong>${getActualThrowCount(currentTurn)}/${regularLimit}</strong></div>
+            <div class="stat"><span>Würfe</span><strong>${getActualThrowCount(currentTurn)}/${regularLimit}</strong></div>
             <div class="stat"><span>Pott</span><strong>${game.pot || 0}</strong></div>
             <div class="stat"><span>Runde</span><strong>${game.roundNumber || 1}</strong></div>
           </div>
@@ -903,7 +903,7 @@
         ${renderOnlineMessages()}
         <div class="status-line ${currentTurn?.forceReroll ? "force" : ""}">${escapeHtml(currentTurn?.message || guidance)}</div>
         ${renderLowestScoreField(round?.results || [])}
-        <div class="dice-row" aria-label="WÃ¼rfel">
+        <div class="dice-row" aria-label="Würfel">
           ${(currentTurn?.dice || [null, null, null])
             .map((die, index) =>
               renderOnlineDie({
@@ -923,9 +923,9 @@
         </div>
         <div class="actions">
           <button class="button ${currentTurn?.forceReroll ? "gold" : ""}" id="online-roll" ${canRoll ? "" : "disabled"}>
-            ${currentTurn?.forceReroll ? `Pflichtwurf (Wurf ${getNextThrowNumber(currentTurn)})` : `WÃ¼rfeln (Wurf ${getNextThrowNumber(currentTurn)})`}
+            ${currentTurn?.forceReroll ? `Pflichtwurf (Wurf ${getNextThrowNumber(currentTurn)})` : `Würfeln (Wurf ${getNextThrowNumber(currentTurn)})`}
           </button>
-          <button class="button gold" id="online-take-result" ${canTake ? "" : "disabled"}>Ergebnis bestÃ¤tigen</button>
+          <button class="button gold" id="online-take-result" ${canTake ? "" : "disabled"}>Ergebnis bestätigen</button>
           <button class="button warn" id="leave-online-room">Raum verlassen</button>
         </div>
       </section>
@@ -944,7 +944,7 @@
       <button
         class="die ${held ? "is-held" : ""} ${locked ? "is-locked" : ""}"
         data-online-toggle-die="${index}"
-        aria-label="WÃ¼rfel ${index + 1}${held ? ", gehalten" : ""}"
+        aria-label="Würfel ${index + 1}${held ? ", gehalten" : ""}"
         aria-pressed="${held ? "true" : "false"}"
         ${!value || locked || disabled ? "disabled" : ""}
       >
@@ -966,7 +966,7 @@
               <li class="result-row">
                 <div class="result-main">
                   <strong>${escapeHtml(result.playerName)}</strong>
-                  <span class="result-meta">${escapeHtml(resultLabel)} Â· ${formatResultThrowMeta(result)}</span>
+                  <span class="result-meta">${escapeHtml(resultLabel)} · ${formatResultThrowMeta(result)}</span>
                 </div>
                 <div class="score-badge">${escapeHtml(resultLabel)}</div>
               </li>
@@ -988,7 +988,7 @@
       </section>
       <section class="surface">
         ${renderOnlineMessages()}
-        <p class="muted">Der Startspieler bestimmt das Limit durch tatsÃ¤chlich ausgefÃ¼hrte WÃ¼rfe, hÃ¶chstens drei.</p>
+        <p class="muted">Der Startspieler bestimmt das Limit durch tatsächlich ausgeführte Würfe, höchstens drei.</p>
         <div class="actions">
           <button class="button" id="online-begin-round" ${canBegin ? "" : "disabled"}>Runde starten</button>
           <button class="button warn" id="leave-online-room">Raum verlassen</button>
@@ -1011,9 +1011,9 @@
       </section>
       <section class="surface">
         ${renderOnlineMessages()}
-        <div class="status-line">${escapeHtml(result?.message || "Ergebnis Ã¼bernommen.")}</div>
+        <div class="status-line">${escapeHtml(result?.message || "Ergebnis übernommen.")}</div>
         <div class="actions">
-          <button class="button" id="online-continue" ${canContinue ? "" : "disabled"}>${game.currentRoundDone ? "Zur Auswertung" : "NÃ¤chster Spieler"}</button>
+          <button class="button" id="online-continue" ${canContinue ? "" : "disabled"}>${game.currentRoundDone ? "Zur Auswertung" : "Nächster Spieler"}</button>
           <button class="button warn" id="leave-online-room">Raum verlassen</button>
         </div>
       </section>
@@ -1033,7 +1033,7 @@
         ${renderOnlineMessages()}
         ${renderOnlineResults(game.lastRound?.results || [])}
         <div class="actions">
-          <button class="button" id="online-next-round" ${isOnlineHost() ? "" : "disabled"}>NÃ¤chste Runde</button>
+          <button class="button" id="online-next-round" ${isOnlineHost() ? "" : "disabled"}>Nächste Runde</button>
           <button class="button warn" id="leave-online-room">Raum verlassen</button>
         </div>
       </section>

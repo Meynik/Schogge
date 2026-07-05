@@ -219,6 +219,27 @@ button:focus-visible {
   font-size: 1.06rem;
 }
 
+.mode-grid {
+  grid-template-columns: repeat(auto-fit, minmax(7.25rem, 1fr));
+  gap: 0.65rem;
+}
+
+.mode-stat {
+  padding: clamp(0.6rem, 2.3vw, 0.8rem);
+}
+
+.mode-stat span,
+.mode-stat strong {
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  hyphens: none;
+}
+
+.mode-stat strong {
+  font-size: clamp(0.98rem, 3.2vw, 1.08rem);
+}
+
 .player-list,
 .history-list,
 .result-list,
