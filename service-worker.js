@@ -1,4 +1,4 @@
-const CACHE_NAME = "schogge-cache-v12";
+const CACHE_NAME = "schogge-cache-v13";
 const ASSETS = [
   "./",
   "./index.html",
