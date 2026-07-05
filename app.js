@@ -607,11 +607,14 @@
             <p class="brand-subtitle">${state.gameStarted ? `Runde ${state.roundNumber}` : "Privates Würfelspiel"}</p>
           </div>
         </div>
-        ${
-          state.gameStarted
-            ? `<button class="icon-button" id="prepare-new-game" aria-label="Spiel neu einrichten">↺</button>`
-            : ""
-        }
+        <div class="topbar-actions">
+          <button class="icon-button" id="refresh-app" aria-label="App aktualisieren" title="App aktualisieren">↻</button>
+          ${
+            state.gameStarted
+              ? `<button class="icon-button" id="prepare-new-game" aria-label="Spiel neu einrichten" title="Spiel neu einrichten">↺</button>`
+              : ""
+          }
+        </div>
       </header>
       <main class="view">
         ${renderActiveView(activePanel)}
@@ -1331,7 +1334,30 @@
         render();
       });
     });
+    $("#refresh-app", app)?.addEventListener("click", refreshApp);
     $("#prepare-new-game", app)?.addEventListener("click", prepareNewGame);
+  }
+
+  async function refreshApp() {
+    clearActiveRollTimers();
+    try {
+      if ("serviceWorker" in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.unregister().catch(() => false)));
+      }
+      if ("caches" in window) {
+        const cacheKeys = await caches.keys();
+        await Promise.all(
+          cacheKeys
+            .filter((key) => key.startsWith("schogge-cache-"))
+            .map((key) => caches.delete(key)),
+        );
+      }
+    } finally {
+      const url = new URL(window.location.href);
+      url.searchParams.set("appRefresh", Date.now().toString());
+      window.location.replace(url.toString());
+    }
   }
 
   function bindViewActions(app, activePanel) {
@@ -2046,7 +2072,10 @@
 
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("service-worker.js").catch(() => {});
+      navigator.serviceWorker
+        .register("service-worker.js", { updateViaCache: "none" })
+        .then((registration) => registration.update())
+        .catch(() => {});
     });
   }
 
