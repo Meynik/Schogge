@@ -197,13 +197,17 @@ returns text
 language plpgsql
 as $$
 declare
-  code text;
+  generated_code text;
 begin
   loop
-    code := 'SCHOGGE' || lpad(floor(random() * 10000)::integer::text, 4, '0');
-    exit when not exists (select 1 from public.schogge_rooms where schogge_rooms.code = code);
+    generated_code := 'SCHOGGE' || lpad(floor(random() * 10000)::integer::text, 4, '0');
+    exit when not exists (
+      select 1
+      from public.schogge_rooms as rooms
+      where rooms.code = generated_code
+    );
   end loop;
-  return code;
+  return generated_code;
 end;
 $$;
 
@@ -281,8 +285,8 @@ begin
   end if;
 
   select * into target_room
-  from public.schogge_rooms
-  where code = clean_code and expires_at > now()
+  from public.schogge_rooms as rooms
+  where rooms.code = clean_code and rooms.expires_at > now()
   for update;
 
   if target_room.id is null then
