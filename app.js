@@ -484,6 +484,17 @@
     return !isSchoggeScore(scoreCombination(turn.dice));
   }
 
+  function getEarlyStopConfirmationTitle(score) {
+    return `Das Spiel heißt Schogge und nicht ${getCombinationDisplayName(score)}.`;
+  }
+
+  function createEarlyStopConfirmation(context, turn) {
+    return {
+      context,
+      title: getEarlyStopConfirmationTitle(scoreCombination(turn.dice)),
+    };
+  }
+
   function shouldAutoAcceptTurn(round, turn) {
     return false;
   }
@@ -507,6 +518,7 @@
     isSchoggeScore,
     hasVoluntaryRegularRollAvailable,
     shouldShowEarlyStopConfirmation,
+    getEarlyStopConfirmationTitle,
     shouldAutoAcceptTurn,
     getCombinationDisplayName,
     getLowestRoundScoreState,
@@ -819,10 +831,11 @@
     if (!state.earlyStopConfirmation) {
       return "";
     }
+    const title = state.earlyStopConfirmation.title || "Das Spiel heißt Schogge.";
     return `
       <div class="modal-backdrop" role="presentation">
         <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="early-stop-title">
-          <h2 id="early-stop-title">Wie heißt das Spiel? Schogge und nicht Straße.</h2>
+          <h2 id="early-stop-title">${escapeHtml(title)}</h2>
           <p>Du kannst noch weiterwürfeln. Möchtest du wirklich mit diesem Ergebnis aufhören?</p>
           <div class="actions">
             <button class="button" id="continue-rolling">Weiterwürfeln</button>
@@ -2115,7 +2128,7 @@
       return;
     }
     if (shouldShowEarlyStopConfirmation(round, turn)) {
-      state.earlyStopConfirmation = { context: "online" };
+      state.earlyStopConfirmation = createEarlyStopConfirmation("online", turn);
       render();
       return;
     }
@@ -2694,7 +2707,7 @@
       return;
     }
     if (reason === "confirmed" && !options.skipEarlyStopConfirmation && shouldShowEarlyStopConfirmation(round, turn)) {
-      state.earlyStopConfirmation = { context: "local" };
+      state.earlyStopConfirmation = createEarlyStopConfirmation("local", turn);
       render();
       return;
     }

@@ -14,6 +14,7 @@ const {
   canRollTurn,
   canTakeTurnResult,
   shouldShowEarlyStopConfirmation,
+  getEarlyStopConfirmationTitle,
   shouldAutoAcceptTurn,
   getCombinationDisplayName,
   getLowestRoundScoreState,
@@ -128,6 +129,14 @@ test("Einfache Zahlen und Kurve", () => {
   assert.equal(scoreCombination([6, 5, 5]).label, "655");
   assert.equal(scoreCombination([2, 2, 1]).label, "221");
   assert.equal(getCombinationDisplayName(scoreCombination([5, 5, 4])), "554");
+});
+
+test("Früh-Aufhören-Modal nutzt dynamische Ergebnisbezeichnung", () => {
+  assert.equal(getEarlyStopConfirmationTitle(scoreCombination([3, 2, 1])), "Das Spiel heißt Schogge und nicht Kleine Straße.");
+  assert.equal(getEarlyStopConfirmationTitle(scoreCombination([6, 5, 4])), "Das Spiel heißt Schogge und nicht Große Straße.");
+  assert.equal(getEarlyStopConfirmationTitle(scoreCombination([5, 3, 1])), "Das Spiel heißt Schogge und nicht Kurve.");
+  assert.equal(getEarlyStopConfirmationTitle(scoreCombination([6, 3, 2])), "Das Spiel heißt Schogge und nicht 632.");
+  assert.equal(getEarlyStopConfirmationTitle(scoreCombination([5, 5, 5])), "Das Spiel heißt Schogge und nicht Fünfer Drasch.");
 });
 
 test("Doppelt tief nur beim aktuell niedrigsten Gleichstand", () => {
