@@ -5,6 +5,7 @@ const {
   scoreCombination,
   applyDoubleSixRule,
   resolveRound,
+  createTableEdgeLossOutcome,
   sortWorstFirst,
   deriveStarterRegularLimit,
   getTurnRegularLimit,
@@ -12,6 +13,7 @@ const {
   getNextThrowNumber,
   canRollTurn,
   canTakeTurnResult,
+  shouldShowEarlyStopConfirmation,
   shouldAutoAcceptTurn,
   getCombinationDisplayName,
   getLowestRoundScoreState,
@@ -321,6 +323,76 @@ test("Reguläres Schogge aus ab dem zweiten Wurf wartet auf Bestätigung", () =>
   assert.equal(shouldAutoAcceptTurn(round, turn), false);
 });
 
+test("Früh aufhören: normale Zahl nach Wurf 1 zeigt Hinweis", () => {
+  const round = roundState(3);
+  const turn = turnState({ playerId: "B", regularRollCount: 1, rollCount: 1, dice: [6, 3, 2] });
+
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), true);
+});
+
+test("Früh aufhören: Straße nach Wurf 2 zeigt Hinweis", () => {
+  const round = roundState(3);
+  const turn = turnState({ playerId: "B", regularRollCount: 2, rollCount: 2, dice: [3, 2, 1] });
+
+  assert.equal(scoreCombination(turn.dice).category, "strasse");
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), true);
+});
+
+test("Früh aufhören: Drasch nach Wurf 2 zeigt Hinweis", () => {
+  const round = roundState(3);
+  const turn = turnState({ playerId: "B", regularRollCount: 2, rollCount: 2, dice: [4, 4, 4] });
+
+  assert.equal(scoreCombination(turn.dice).category, "drasch");
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), true);
+});
+
+test("Früh aufhören: Schogge 4 zeigt keinen Hinweis", () => {
+  const round = roundState(3);
+  const turn = turnState({ playerId: "B", regularRollCount: 1, rollCount: 1, dice: [1, 1, 4] });
+
+  assert.equal(scoreCombination(turn.dice).category, "schogge");
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), false);
+});
+
+test("Früh aufhören: Schogge aus zeigt keinen Hinweis", () => {
+  const round = roundState(3);
+  const turn = turnState({ playerId: "B", regularRollCount: 1, rollCount: 1, dice: [1, 1, 1] });
+
+  assert.equal(scoreCombination(turn.dice).category, "schogge_aus");
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), false);
+});
+
+test("Früh aufhören: normale Zahl am regulären Limit zeigt keinen Hinweis", () => {
+  const round = roundState(2);
+  const turn = turnState({ playerId: "B", regularRollCount: 2, rollCount: 2, dice: [6, 3, 2] });
+
+  assert.equal(canTakeTurnResult(round, turn), true);
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), false);
+});
+
+test("Früh aufhören: offener Pflichtwurf zeigt keinen Hinweis und blockiert Übernahme", () => {
+  const round = roundState(3);
+  const turn = turnState({ playerId: "B", regularRollCount: 1, rollCount: 1, forceReroll: true, dice: [6, 1, 2] });
+
+  assert.equal(canTakeTurnResult(round, turn), false);
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), false);
+  assert.equal(canRollTurn(round, turn), true);
+});
+
+test("Früh aufhören: gesperrte Bestätigung zeigt keinen zweiten Hinweis", () => {
+  const round = roundState(3);
+  const turn = turnState({
+    playerId: "B",
+    regularRollCount: 1,
+    rollCount: 1,
+    confirmationLocked: true,
+    dice: [6, 3, 2],
+  });
+
+  assert.equal(canTakeTurnResult(round, turn), false);
+  assert.equal(shouldShowEarlyStopConfirmation(round, turn), false);
+});
+
 test("Startspieler beendet nach einem Wurf: andere haben maximal einen regulären Wurf", () => {
   const starterTurn = turnState({ regularRollCount: 1, rollCount: 1 });
   const limit = deriveStarterRegularLimit(starterTurn);
@@ -510,6 +582,30 @@ test("Schogge Spezial: Intensität steuert Risiko und Rettungsfenster", () => {
   assert.equal(getRescueWindowMs(relaxed), 1800);
   assert.equal(getRescueWindowMs(normal), 1200);
   assert.equal(getRescueWindowMs(escalating), 800);
+});
+
+test("Schogge Spezial: Strafe bei Würfelverlust ist standardmäßig aktiv", () => {
+  const rules = defaultSpecialRules();
+
+  assert.equal(rules.penaltyEnabled, true);
+  assert.equal(rules.penaltyText, "{player} muss ein Glas exen!");
+});
+
+test("Schogge Spezial: fehlgeschlagene Rettung startet nächste Runde mit demselben Spieler", () => {
+  const outcome = createTableEdgeLossOutcome({
+    type: "table_edge_lost",
+    outcome: "lost",
+    playerId: "B",
+    playerName: "Ben",
+    throwNumber: 2,
+    penaltyText: "Ben muss ein Glas exen!",
+  });
+
+  assert.equal(outcome.type, "table_edge_loss");
+  assert.equal(outcome.nextStarterId, "B");
+  assert.equal(outcome.losers[0].playerName, "Ben");
+  assert.equal(outcome.penaltyText, "Ben muss ein Glas exen!");
+  assert.equal(outcome.potAfter, 0);
 });
 
 console.log("Alle Regeltests bestanden.");

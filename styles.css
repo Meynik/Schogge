@@ -607,6 +607,43 @@ button:focus-visible {
   color: #6f1f28;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(23, 27, 29, 0.5);
+  backdrop-filter: blur(8px);
+}
+
+.confirm-modal {
+  display: grid;
+  gap: 0.85rem;
+  width: min(100%, 440px);
+  border-radius: 8px;
+  padding: clamp(1rem, 4vw, 1.25rem);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.confirm-modal h2 {
+  margin: 0;
+  font-size: clamp(1.25rem, 5vw, 1.55rem);
+  line-height: 1.12;
+}
+
+.confirm-modal p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.confirm-modal .button {
+  min-height: 52px;
+}
+
 .lowest-field {
   display: grid;
   gap: 0.18rem;

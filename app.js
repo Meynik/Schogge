@@ -45,7 +45,7 @@
       tableEdge: true,
       rescueMechanic: true,
       luckySave: false,
-      penaltyEnabled: false,
+      penaltyEnabled: true,
       intensity: "normal",
       penaltyText: SPECIAL_RULE_CONFIG.defaultPenaltyText,
     };
@@ -366,6 +366,26 @@
     };
   }
 
+  function createTableEdgeLossOutcome(event) {
+    const playerNameValue = event?.playerName || "Spieler";
+    return {
+      type: "table_edge_loss",
+      title: "Würfel vom Tisch",
+      losers: [
+        {
+          playerId: event?.playerId,
+          playerName: playerNameValue,
+        },
+      ],
+      drinks: 0,
+      multiplier: 1,
+      penaltyText: event?.penaltyText || formatPenaltyText(SPECIAL_RULE_CONFIG.defaultPenaltyText, playerNameValue),
+      nextStarterId: event?.playerId,
+      potAfter: 0,
+      tableEdgeEvent: event || null,
+    };
+  }
+
   function getRegularRollCount(turn) {
     if (!turn) {
       return 0;
@@ -446,6 +466,24 @@
     return round.regularLimit != null;
   }
 
+  function isSchoggeScore(score) {
+    return Boolean(score && (score.category === "schogge" || score.category === "schogge_aus"));
+  }
+
+  function hasVoluntaryRegularRollAvailable(round, turn) {
+    if (!round || !turn || turn.forceReroll || turn.isRolling || turn.confirmationLocked || !turn.dice.every(Boolean)) {
+      return false;
+    }
+    return getActualThrowCount(turn) < getTurnRegularLimit(round, turn);
+  }
+
+  function shouldShowEarlyStopConfirmation(round, turn) {
+    if (!canTakeTurnResult(round, turn) || !hasVoluntaryRegularRollAvailable(round, turn)) {
+      return false;
+    }
+    return !isSchoggeScore(scoreCombination(turn.dice));
+  }
+
   function shouldAutoAcceptTurn(round, turn) {
     return false;
   }
@@ -454,6 +492,7 @@
     scoreCombination,
     applyDoubleSixRule,
     resolveRound,
+    createTableEdgeLossOutcome,
     sortWorstFirst,
     sortDiceDesc,
     getRegularRollCount,
@@ -465,6 +504,9 @@
     getTurnRegularLimit,
     canRollTurn,
     canTakeTurnResult,
+    isSchoggeScore,
+    hasVoluntaryRegularRollAvailable,
+    shouldShowEarlyStopConfirmation,
     shouldAutoAcceptTurn,
     getCombinationDisplayName,
     getLowestRoundScoreState,
@@ -506,6 +548,7 @@
     tableEdgeEventActive: false,
     rescueDeadline: null,
     tableEdgeEvent: null,
+    earlyStopConfirmation: null,
     luckySaves: {},
     screen: "setup",
     setupMode: "menu",
@@ -576,6 +619,7 @@
         restored.tableEdgeEventActive = false;
         restored.rescueDeadline = null;
         restored.tableEdgeEvent = null;
+        restored.earlyStopConfirmation = null;
         restored.luckySaves = restored.luckySaves || {};
         if (restored.currentTurn) {
           restored.currentTurn = clearTurnAnimation(restored.currentTurn);
@@ -589,7 +633,7 @@
   }
 
   function saveState() {
-    if (state.currentTurn?.isRolling || state.tableEdgeEventActive) {
+    if (state.currentTurn?.isRolling || state.tableEdgeEventActive || state.earlyStopConfirmation) {
       return;
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, history: undefined }));
@@ -765,9 +809,28 @@
         <button class="nav-button ${state.panel === "rules" ? "is-active" : ""}" data-panel="rules">Regeln</button>
         <button class="nav-button ${state.panel === "history" ? "is-active" : ""}" data-panel="history">Verlauf</button>
       </nav>
+      ${renderEarlyStopModal()}
     `;
     bindGlobalActions(app);
     bindViewActions(app, activePanel);
+  }
+
+  function renderEarlyStopModal() {
+    if (!state.earlyStopConfirmation) {
+      return "";
+    }
+    return `
+      <div class="modal-backdrop" role="presentation">
+        <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="early-stop-title">
+          <h2 id="early-stop-title">Wie heißt das Spiel? Schogge und nicht Straße.</h2>
+          <p>Du kannst noch weiterwürfeln. Möchtest du wirklich mit diesem Ergebnis aufhören?</p>
+          <div class="actions">
+            <button class="button" id="continue-rolling">Weiterwürfeln</button>
+            <button class="button gold" id="confirm-early-stop">Trotzdem aufhören</button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   function renderActiveView(activePanel) {
@@ -1097,12 +1160,13 @@
 
     const rollAnimation = getOnlineRollAnimation(currentTurn);
     const isRolling = Boolean(rollAnimation);
+    const modalOpen = Boolean(state.earlyStopConfirmation);
     const visibleDice = isRolling ? rollAnimation.rollingDice : currentTurn?.dice || [null, null, null];
     const rollingIndices = rollAnimation?.rollingIndices || [];
     const score = !isRolling && currentTurn?.dice?.every(Boolean) ? scoreCombination(currentTurn.dice) : null;
     const regularLimit = round && currentTurn ? getTurnRegularLimit(round, currentTurn) : 3;
-    const canRoll = !isRolling && myTurn && round && currentTurn && canRollTurn(round, currentTurn);
-    const canTake = !isRolling && myTurn && round && currentTurn && canTakeTurnResult(round, currentTurn);
+    const canRoll = !modalOpen && !isRolling && myTurn && round && currentTurn && canRollTurn(round, currentTurn);
+    const canTake = !modalOpen && !isRolling && myTurn && round && currentTurn && canTakeTurnResult(round, currentTurn);
     const guidance = myTurn ? "Du bist dran." : `${activeName} ist dran.`;
     const statusClass = isRolling ? "rolling" : currentTurn?.forceReroll ? "force" : "";
     const statusMessage = isRolling ? rollAnimation.message : currentTurn?.message || guidance;
@@ -1130,7 +1194,7 @@
                 index,
                 held: currentTurn?.held?.[index],
                 locked: currentTurn?.forceReroll,
-                disabled: isRolling || !myTurn || currentTurn?.forceReroll,
+                disabled: modalOpen || isRolling || !myTurn || currentTurn?.forceReroll,
                 rolling: isRolling && rollingIndices.includes(index),
               }),
             )
@@ -1307,10 +1371,11 @@
     const visibleDice = turn.isRolling && turn.rollingDice ? turn.rollingDice : turn.dice;
     const rollingIndices = turn.rollingIndices || [];
     const tableEdgeActive = isCurrentTableEdgeEvent(turn);
+    const modalOpen = Boolean(state.earlyStopConfirmation);
     const score = !turn.isRolling && turn.dice.every(Boolean) ? scoreCombination(turn.dice) : null;
     const statusClass = tableEdgeActive ? "edge" : turn.isRolling ? "rolling" : turn.forceReroll ? "force" : score?.category === "schogge_aus" ? "aus" : "";
-    const canTake = !tableEdgeActive && canTakeTurnResult(round, turn);
-    const canRoll = !tableEdgeActive && canRollTurn(round, turn);
+    const canTake = !modalOpen && !tableEdgeActive && canTakeTurnResult(round, turn);
+    const canRoll = !modalOpen && !tableEdgeActive && canRollTurn(round, turn);
     const regularLimit = getTurnRegularLimit(round, turn);
     const actualThrowCount = getActualThrowCount(turn);
     const nextThrowNumber = getNextThrowNumber(turn);
@@ -1353,7 +1418,7 @@
                   index,
                   held: turn.held[index],
                   locked: turn.forceReroll,
-                  disabled: turn.isRolling,
+                  disabled: modalOpen || turn.isRolling,
                   rolling: turn.isRolling && rollingIndices.includes(index),
                 }),
               )
@@ -1493,6 +1558,9 @@
     const outcome = round.outcome;
     const loserIds = new Set(outcome.losers.map((entry) => entry.playerId));
     const text = outcomeText(outcome);
+    const nextRoundLabel = outcome.type === "table_edge_loss"
+      ? `Neue Runde mit ${playerName(outcome.nextStarterId)} starten`
+      : "Nächste Runde";
 
     return `
       <section class="board">
@@ -1510,25 +1578,29 @@
       <section class="surface">
         ${renderLowestScoreField(round.results)}
         <h2>Ergebnisse</h2>
-        <ul class="result-list">
-          ${round.results
-            .map((result) => {
-              const resultLabel = getResultDisplayName(result, round.results);
-              const loserText = loserIds.has(result.playerId) ? " · Verlierer" : "";
-              return `
-                <li class="result-row ${loserIds.has(result.playerId) ? (outcome.type === "glass" ? "is-glass" : "is-loser") : ""}">
-                  <div class="result-main">
-                    <strong>${escapeHtml(result.playerName)}</strong>
-                    <span class="result-meta">${escapeHtml(resultLabel)} · ${formatResultThrowMeta(result)}${loserText}</span>
-                  </div>
-                  <div class="score-badge">${escapeHtml(resultLabel)}</div>
-                </li>
-              `;
-            })
-            .join("")}
-        </ul>
+        ${
+          round.results.length
+            ? `<ul class="result-list">
+                ${round.results
+                  .map((result) => {
+                    const resultLabel = getResultDisplayName(result, round.results);
+                    const loserText = loserIds.has(result.playerId) ? " · Verlierer" : "";
+                    return `
+                      <li class="result-row ${loserIds.has(result.playerId) ? (outcome.type === "glass" ? "is-glass" : "is-loser") : ""}">
+                        <div class="result-main">
+                          <strong>${escapeHtml(result.playerName)}</strong>
+                          <span class="result-meta">${escapeHtml(resultLabel)} · ${formatResultThrowMeta(result)}${loserText}</span>
+                        </div>
+                        <div class="score-badge">${escapeHtml(resultLabel)}</div>
+                      </li>
+                    `;
+                  })
+                  .join("")}
+              </ul>`
+            : `<p class="muted">Keine Ergebnisse übernommen. Die Runde wurde durch den verlorenen Würfel beendet.</p>`
+        }
         ${renderSpecialEventList(round.specialEvents || [])}
-        <button class="button" id="next-round">Nächste Runde</button>
+        <button class="button" id="next-round">${escapeHtml(nextRoundLabel)}</button>
       </section>
     `;
   }
@@ -1571,7 +1643,7 @@
                     (entry) => `
                       <li class="history-row">
                         <strong>Runde ${entry.roundNumber}: ${escapeHtml(entry.summary)}</strong>
-                        <span class="history-meta">${escapeHtml(entry.date)} · Start: ${escapeHtml(entry.startPlayer)} · Limit ${entry.limit} · ${escapeHtml(entry.mode || "Klassisch")}</span>
+                        <span class="history-meta">${escapeHtml(entry.date)} · Start: ${escapeHtml(entry.startPlayer)} · Limit ${entry.limit || "-"} · ${escapeHtml(entry.mode || "Klassisch")}</span>
                         ${renderSpecialEventList(entry.events || [])}
                       </li>
                     `,
@@ -1643,6 +1715,11 @@
   }
 
   function bindGlobalActions(app) {
+    if (state.earlyStopConfirmation) {
+      bindEarlyStopModalActions(app);
+      return;
+    }
+
     $$("[data-panel]", app).forEach((button) => {
       button.addEventListener("click", () => {
         const panel = button.dataset.panel;
@@ -1652,6 +1729,27 @@
     });
     $("#refresh-app", app)?.addEventListener("click", refreshApp);
     $("#prepare-new-game", app)?.addEventListener("click", prepareNewGame);
+  }
+
+  function bindEarlyStopModalActions(app) {
+    $("#continue-rolling", app)?.addEventListener("click", () => {
+      state.earlyStopConfirmation = null;
+      render();
+    });
+    const confirmButton = $("#confirm-early-stop", app);
+    confirmButton?.addEventListener("click", () => {
+      const confirmation = state.earlyStopConfirmation;
+      if (!confirmation) {
+        return;
+      }
+      confirmButton.disabled = true;
+      state.earlyStopConfirmation = null;
+      if (confirmation?.context === "online") {
+        performOnlineAction("schogge_accept_turn", {});
+        return;
+      }
+      acceptTurn("confirmed", { skipEarlyStopConfirmation: true });
+    });
   }
 
   async function refreshApp() {
@@ -1678,6 +1776,10 @@
   }
 
   function bindViewActions(app, activePanel) {
+    if (state.earlyStopConfirmation) {
+      return;
+    }
+
     if (activePanel === "rules") {
       return;
     }
@@ -1816,7 +1918,7 @@
     $("#start-online-game", app)?.addEventListener("click", () => performOnlineAction("schogge_start_game", {}));
     $("#online-begin-round", app)?.addEventListener("click", () => performOnlineAction("schogge_begin_round", {}));
     $("#online-roll", app)?.addEventListener("click", performOnlineRoll);
-    $("#online-take-result", app)?.addEventListener("click", () => performOnlineAction("schogge_accept_turn", {}));
+    $("#online-take-result", app)?.addEventListener("click", requestOnlineTakeResult);
     $("#online-continue", app)?.addEventListener("click", () => performOnlineAction("schogge_continue_after_result", {}));
     $("#online-next-round", app)?.addEventListener("click", () => performOnlineAction("schogge_next_round", {}));
     $("#leave-online-room", app)?.addEventListener("click", leaveOnlineRoom);
@@ -2003,6 +2105,21 @@
       });
       await loadOnlineRoom();
     });
+  }
+
+  function requestOnlineTakeResult() {
+    const game = getOnlineGameState();
+    const round = game?.currentRound;
+    const turn = game?.currentTurn;
+    if (turn?.playerId !== onlineState.session?.playerId) {
+      return;
+    }
+    if (shouldShowEarlyStopConfirmation(round, turn)) {
+      state.earlyStopConfirmation = { context: "online" };
+      render();
+      return;
+    }
+    performOnlineAction("schogge_accept_turn", {});
   }
 
   function performOnlineRoll() {
@@ -2519,7 +2636,7 @@
     turn.dice = [...event.previousDice];
     turn.held = [...event.previousHeld];
     turn.confirmationLocked = false;
-    const penalty = rules.penaltyEnabled ? formatPenaltyText(rules.penaltyText, event.playerName) : "";
+    const penalty = formatPenaltyText(rules.penaltyText, event.playerName);
     const eventRecord = {
       type: "table_edge_lost",
       outcome: "lost",
@@ -2528,11 +2645,43 @@
       throwNumber: event.throwNumber,
       reason,
       penaltyText: penalty,
-      text: `${event.playerName}: Würfel vom Tisch gefallen${penalty ? ` (${penalty})` : ""}.`,
+      text: `${event.playerName}: Würfel vom Tisch gefallen. Runde beendet. Trinkstrafe: ${penalty} ${event.playerName} beginnt die nächste Runde.`,
     };
     addSpecialEvent(eventRecord);
     turn.message = `Würfel vom Tisch gefallen!${penalty ? ` ${penalty}` : ""}`;
-    acceptTurn("table_edge_loss", { tableEdgeEvent: eventRecord });
+    abortRoundAfterTableEdgeLoss(eventRecord);
+  }
+
+  function abortRoundAfterTableEdgeLoss(eventRecord) {
+    const round = state.currentRound;
+    if (!round || !eventRecord?.playerId) {
+      return;
+    }
+
+    clearActiveRollTimers();
+    clearTableEdgeEvent();
+    round.results = [];
+    round.regularLimit = null;
+    round.schoggeAusCount = 0;
+    round.potFrozen = false;
+    round.immediateAus = null;
+    round.outcome = createTableEdgeLossOutcome(eventRecord);
+
+    state.history = [createRoundHistoryEntry(round), ...state.history].slice(0, MAX_HISTORY);
+    state.nextStarterId = eventRecord.playerId;
+    state.pot = 0;
+    state.roundNumber += 1;
+    state.lastRound = round;
+    state.lastResult = null;
+    state.currentRound = null;
+    state.currentTurn = null;
+    state.tableEdgeEventActive = false;
+    state.rescueDeadline = null;
+    state.tableEdgeEvent = null;
+    state.earlyStopConfirmation = null;
+    state.screen = "summary";
+    state.panel = null;
+    render();
   }
 
   function acceptTurn(reason, options = {}) {
@@ -2542,6 +2691,11 @@
       return;
     }
     if (reason !== "first_aus" && !canTakeTurnResult(round, turn)) {
+      return;
+    }
+    if (reason === "confirmed" && !options.skipEarlyStopConfirmation && shouldShowEarlyStopConfirmation(round, turn)) {
+      state.earlyStopConfirmation = { context: "local" };
+      render();
       return;
     }
     turn.confirmationLocked = true;
@@ -2623,19 +2777,8 @@
     startTurnForCurrentIndex();
   }
 
-  function finishRound() {
-    const round = state.currentRound;
-    if (!round) {
-      return;
-    }
-    round.outcome = resolveRound({
-      results: round.results,
-      pot: state.pot,
-      schoggeAusCount: round.schoggeAusCount,
-      immediateAus: round.immediateAus,
-    });
-
-    const historyEntry = {
+  function createRoundHistoryEntry(round) {
+    return {
       id: round.id,
       date: new Date().toLocaleString("de-DE", {
         day: "2-digit",
@@ -2660,6 +2803,21 @@
         specialEvents: result.specialEvents || [],
       })),
     };
+  }
+
+  function finishRound() {
+    const round = state.currentRound;
+    if (!round) {
+      return;
+    }
+    round.outcome = resolveRound({
+      results: round.results,
+      pot: state.pot,
+      schoggeAusCount: round.schoggeAusCount,
+      immediateAus: round.immediateAus,
+    });
+
+    const historyEntry = createRoundHistoryEntry(round);
 
     state.history = [historyEntry, ...state.history].slice(0, MAX_HISTORY);
     state.nextStarterId = round.outcome.nextStarterId;
@@ -2697,6 +2855,10 @@
 
   function outcomeText(outcome) {
     const names = outcome.losers.map((entry) => entry.playerName).join(", ");
+    if (outcome.type === "table_edge_loss") {
+      const penaltyText = outcome.penaltyText || formatPenaltyText(SPECIAL_RULE_CONFIG.defaultPenaltyText, names);
+      return `Würfel vom Tisch gefallen! ${penaltyText} ${names} beginnt die nächste Runde.`;
+    }
     if (outcome.type === "immediate_aus") {
       return `${names} verliert sofort und trinkt ${outcome.drinks} Schlücke.`;
     }
