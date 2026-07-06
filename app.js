@@ -9,6 +9,95 @@
   const ROLL_FRAME_MS = 90;
   const REDUCED_ROLL_ANIMATION_MS = 120;
   const REDUCED_ROLL_FRAME_MS = 120;
+  const GAME_MODES = {
+    CLASSIC: "classic",
+    SPECIAL: "special",
+  };
+  const SPECIAL_RULE_CONFIG = {
+    baseRisk: {
+      firstRegular: 0,
+      secondRegular: 0.02,
+      thirdRegular: 0.05,
+      extraVoluntary: 0.1,
+    },
+    intensities: {
+      relaxed: {
+        label: "Entspannt",
+        riskMultiplier: 0.5,
+        rescueWindowMs: 1800,
+      },
+      normal: {
+        label: "Normal",
+        riskMultiplier: 1,
+        rescueWindowMs: 1200,
+      },
+      escalating: {
+        label: "Eskalierend",
+        riskMultiplier: 1.75,
+        rescueWindowMs: 800,
+      },
+    },
+    defaultPenaltyText: "{player} muss ein Glas exen!",
+  };
+
+  function defaultSpecialRules() {
+    return {
+      tableEdge: true,
+      rescueMechanic: true,
+      luckySave: false,
+      penaltyEnabled: false,
+      intensity: "normal",
+      penaltyText: SPECIAL_RULE_CONFIG.defaultPenaltyText,
+    };
+  }
+
+  function normalizeSpecialRules(rules) {
+    const defaults = defaultSpecialRules();
+    const normalized = { ...defaults, ...(rules || {}) };
+    if (!SPECIAL_RULE_CONFIG.intensities[normalized.intensity]) {
+      normalized.intensity = defaults.intensity;
+    }
+    normalized.penaltyText = String(normalized.penaltyText || defaults.penaltyText);
+    return normalized;
+  }
+
+  function getGameModeLabel(gameMode) {
+    return gameMode === GAME_MODES.SPECIAL ? "Schogge Spezial" : "Klassisch";
+  }
+
+  function isSpecialRulesEnabled(gameState) {
+    return gameState?.gameMode === GAME_MODES.SPECIAL;
+  }
+
+  function getSpecialIntensityConfig(rules) {
+    const normalized = normalizeSpecialRules(rules);
+    return SPECIAL_RULE_CONFIG.intensities[normalized.intensity] || SPECIAL_RULE_CONFIG.intensities.normal;
+  }
+
+  function getTableEdgeRisk(gameState, turn, wasForced) {
+    const rules = normalizeSpecialRules(gameState?.specialRules);
+    if (!isSpecialRulesEnabled(gameState) || !rules.tableEdge || wasForced || !turn) {
+      return 0;
+    }
+    const regularRoll = getRegularRollCount(turn);
+    let baseRisk = SPECIAL_RULE_CONFIG.baseRisk.extraVoluntary;
+    if (regularRoll <= 1) {
+      baseRisk = SPECIAL_RULE_CONFIG.baseRisk.firstRegular;
+    } else if (regularRoll === 2) {
+      baseRisk = SPECIAL_RULE_CONFIG.baseRisk.secondRegular;
+    } else if (regularRoll === 3) {
+      baseRisk = SPECIAL_RULE_CONFIG.baseRisk.thirdRegular;
+    }
+    return Math.min(1, Math.max(0, baseRisk * getSpecialIntensityConfig(rules).riskMultiplier));
+  }
+
+  function getRescueWindowMs(rules) {
+    return getSpecialIntensityConfig(rules).rescueWindowMs;
+  }
+
+  function formatPenaltyText(template, playerName) {
+    return String(template || SPECIAL_RULE_CONFIG.defaultPenaltyText).replaceAll("{player}", playerName || "Der Spieler");
+  }
 
   function sortDiceDesc(dice) {
     return [...dice].sort((a, b) => b - a);
@@ -381,6 +470,12 @@
     getLowestRoundScoreState,
     getResultDisplayName,
     isDoubleDeepResult,
+    GAME_MODES,
+    SPECIAL_RULE_CONFIG,
+    defaultSpecialRules,
+    normalizeSpecialRules,
+    getTableEdgeRisk,
+    getRescueWindowMs,
   };
 
   if (typeof module !== "undefined" && module.exports) {
@@ -406,6 +501,12 @@
     roundNumber: 1,
     pot: 0,
     nextStarterId: null,
+    gameMode: GAME_MODES.CLASSIC,
+    specialRules: defaultSpecialRules(),
+    tableEdgeEventActive: false,
+    rescueDeadline: null,
+    tableEdgeEvent: null,
+    luckySaves: {},
     screen: "setup",
     setupMode: "menu",
     panel: null,
@@ -431,6 +532,7 @@
   };
   let activeRollIntervalId = null;
   let activeRollTimeoutId = null;
+  let activeRescueTimeoutId = null;
 
   function createId() {
     if (root.crypto && typeof root.crypto.randomUUID === "function") {
@@ -469,6 +571,12 @@
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved && Array.isArray(saved.players)) {
         const restored = { ...defaultState(), ...saved, history: loadHistory() };
+        restored.gameMode = restored.gameMode === GAME_MODES.SPECIAL ? GAME_MODES.SPECIAL : GAME_MODES.CLASSIC;
+        restored.specialRules = normalizeSpecialRules(restored.specialRules);
+        restored.tableEdgeEventActive = false;
+        restored.rescueDeadline = null;
+        restored.tableEdgeEvent = null;
+        restored.luckySaves = restored.luckySaves || {};
         if (restored.currentTurn) {
           restored.currentTurn = clearTurnAnimation(restored.currentTurn);
         }
@@ -481,7 +589,7 @@
   }
 
   function saveState() {
-    if (state.currentTurn?.isRolling) {
+    if (state.currentTurn?.isRolling || state.tableEdgeEventActive) {
       return;
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, history: undefined }));
@@ -498,6 +606,7 @@
       rollingIndices: [],
       rollAnimationToken: null,
       confirmationLocked: false,
+      specialEvents: Array.isArray(turn.specialEvents) ? turn.specialEvents : [],
     };
   }
 
@@ -518,6 +627,37 @@
   function getTurnOrder(startPlayerId) {
     const startIndex = Math.max(0, state.players.findIndex((player) => player.id === startPlayerId));
     return [...state.players.slice(startIndex), ...state.players.slice(0, startIndex)].map((player) => player.id);
+  }
+
+  function createLuckySaves(players) {
+    if (!isSpecialRulesEnabled(state) || !normalizeSpecialRules(state.specialRules).luckySave) {
+      return {};
+    }
+    return Object.fromEntries(players.map((player) => [player.id, true]));
+  }
+
+  function playerHasLuckySave(playerId) {
+    return Boolean(isSpecialRulesEnabled(state) && normalizeSpecialRules(state.specialRules).luckySave && state.luckySaves?.[playerId]);
+  }
+
+  function consumeLuckySave(playerId) {
+    state.luckySaves = { ...(state.luckySaves || {}), [playerId]: false };
+  }
+
+  function addSpecialEvent(event) {
+    const round = state.currentRound;
+    if (!round) {
+      return;
+    }
+    const entry = {
+      id: createId(),
+      time: new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }),
+      ...event,
+    };
+    round.specialEvents = [...(round.specialEvents || []), entry];
+    if (state.currentTurn) {
+      state.currentTurn.specialEvents = [...(state.currentTurn.specialEvents || []), entry];
+    }
   }
 
   function randomDie() {
@@ -605,7 +745,7 @@
           <div class="brand-mark" aria-hidden="true">111</div>
           <div>
             <h1 class="brand-title">Schogge</h1>
-            <p class="brand-subtitle">${state.gameStarted ? `Runde ${state.roundNumber}` : "Privates Würfelspiel"}</p>
+            <p class="brand-subtitle">${state.gameStarted ? `Runde ${state.roundNumber}` : "Privates Würfelspiel"} · ${escapeHtml(getGameModeLabel(state.gameMode))}</p>
           </div>
         </div>
         <div class="topbar-actions">
@@ -669,9 +809,24 @@
           <div class="stat-grid">
             <div class="stat"><span>Spieler</span><strong>${state.players.length}/6</strong></div>
             <div class="stat"><span>Runde</span><strong>${state.roundNumber}</strong></div>
-            <div class="stat"><span>Pott</span><strong>${state.pot}</strong></div>
+            <div class="stat"><span>Modus</span><strong>${escapeHtml(getGameModeLabel(state.gameMode))}</strong></div>
           </div>
         </div>
+      </section>
+
+      <section class="surface">
+        <h2>Regelmodus</h2>
+        <div class="choice-grid">
+          <button class="mode-choice ${state.gameMode === GAME_MODES.CLASSIC ? "is-selected" : ""}" data-game-mode="${GAME_MODES.CLASSIC}" type="button">
+            <strong>Klassisch</strong>
+            <span>Bisherige Regeln ohne zufällige Sonderereignisse.</span>
+          </button>
+          <button class="mode-choice ${state.gameMode === GAME_MODES.SPECIAL ? "is-selected" : ""}" data-game-mode="${GAME_MODES.SPECIAL}" type="button">
+            <strong>Schogge Spezial</strong>
+            <span>Klassische Regeln plus Party- und Risikoereignisse.</span>
+          </button>
+        </div>
+        ${state.gameMode === GAME_MODES.SPECIAL ? renderSpecialSetupOptions() : ""}
       </section>
 
       <section class="surface">
@@ -698,6 +853,60 @@
             : ""
         }
       </section>
+    `;
+  }
+
+  function renderSpecialSetupOptions() {
+    const rules = normalizeSpecialRules(state.specialRules);
+    return `
+      <div class="special-settings">
+        <label class="toggle-row">
+          <input type="checkbox" data-special-toggle="tableEdge" ${rules.tableEdge ? "checked" : ""}>
+          <span>
+            <strong>Würfel-vom-Tisch-Regel</strong>
+            <small>Freiwilliges Weiterwürfeln kann ein Tischkanten-Ereignis auslösen.</small>
+          </span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" data-special-toggle="rescueMechanic" ${rules.rescueMechanic ? "checked" : ""}>
+          <span>
+            <strong>Rettungsmechanik</strong>
+            <small>Bei Gefahr erscheint ein großer Rettungsbutton mit Zeitfenster.</small>
+          </span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" data-special-toggle="luckySave" ${rules.luckySave ? "checked" : ""}>
+          <span>
+            <strong>Lucky Save</strong>
+            <small>Jeder Spieler erhält genau eine automatische Rettung.</small>
+          </span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" data-special-toggle="penaltyEnabled" ${rules.penaltyEnabled ? "checked" : ""}>
+          <span>
+            <strong>Strafe bei Würfelverlust</strong>
+            <small>Zeigt einen konfigurierbaren Straftext beim heruntergefallenen Würfel.</small>
+          </span>
+        </label>
+        <div class="field">
+          <span>Intensität</span>
+          <div class="segmented-control">
+            ${Object.entries(SPECIAL_RULE_CONFIG.intensities)
+              .map(
+                ([key, config]) => `
+                  <button class="${rules.intensity === key ? "is-selected" : ""}" data-special-intensity="${key}" type="button">
+                    ${escapeHtml(config.label)}
+                  </button>
+                `,
+              )
+              .join("")}
+          </div>
+        </div>
+        <label class="field">
+          <span>Straftext</span>
+          <input id="special-penalty-text" value="${escapeHtml(rules.penaltyText)}" ${rules.penaltyEnabled ? "" : "disabled"}>
+        </label>
+      </div>
     `;
   }
 
@@ -1082,6 +1291,7 @@
       <section class="surface">
         <h2>Runde starten</h2>
         <p class="muted">Der Startspieler würfelt zuerst. Seine tatsächlich ausgeführten Würfe legen anschließend das Limit für alle anderen fest, höchstens jedoch drei.</p>
+        ${renderLuckySaveStatus()}
         <button class="button" id="begin-round">Runde starten</button>
       </section>
     `;
@@ -1096,10 +1306,11 @@
     const player = currentPlayer();
     const visibleDice = turn.isRolling && turn.rollingDice ? turn.rollingDice : turn.dice;
     const rollingIndices = turn.rollingIndices || [];
+    const tableEdgeActive = isCurrentTableEdgeEvent(turn);
     const score = !turn.isRolling && turn.dice.every(Boolean) ? scoreCombination(turn.dice) : null;
-    const statusClass = turn.isRolling ? "rolling" : turn.forceReroll ? "force" : score?.category === "schogge_aus" ? "aus" : "";
-    const canTake = canTakeTurnResult(round, turn);
-    const canRoll = canRollTurn(round, turn);
+    const statusClass = tableEdgeActive ? "edge" : turn.isRolling ? "rolling" : turn.forceReroll ? "force" : score?.category === "schogge_aus" ? "aus" : "";
+    const canTake = !tableEdgeActive && canTakeTurnResult(round, turn);
+    const canRoll = !tableEdgeActive && canRollTurn(round, turn);
     const regularLimit = getTurnRegularLimit(round, turn);
     const actualThrowCount = getActualThrowCount(turn);
     const nextThrowNumber = getNextThrowNumber(turn);
@@ -1133,32 +1344,35 @@
             ? `<div class="status-line confirm">${escapeHtml(confirmHint)}</div>`
             : ""
         }
-        <div class="dice-row" aria-label="Würfel">
-          ${visibleDice
-            .map((die, index) =>
-              renderDie({
-                value: die,
-                index,
-                held: turn.held[index],
-                locked: turn.forceReroll,
-                disabled: turn.isRolling,
-                rolling: turn.isRolling && rollingIndices.includes(index),
-              }),
-            )
-            .join("")}
-        </div>
-        <div class="pill-row">
-          ${score ? `<span class="pill ${score.category === "schogge_aus" ? "warn" : "info"}">${escapeHtml(score.label)}</span>` : ""}
-          ${turn.forceReroll ? `<span class="pill gold">Pflichtwurf</span>` : ""}
-          ${turn.isRolling ? `<span class="pill gold">Würfel rollen</span>` : ""}
-          ${round.potFrozen ? `<span class="pill warn">Pott geschlossen</span>` : ""}
-        </div>
-        <div class="actions">
-          <button class="button ${turn.forceReroll ? "gold" : ""}" id="roll-dice" ${canRoll ? "" : "disabled"}>
-            ${turn.forceReroll ? `Pflichtwurf (Wurf ${nextThrowNumber})` : `Würfeln (Wurf ${nextThrowNumber})`}
-          </button>
-          <button class="button gold" id="take-result" ${canTake ? "" : "disabled"}>Ergebnis bestätigen</button>
-        </div>
+        ${tableEdgeActive ? renderTableEdgeOverlay() : `
+          <div class="dice-row" aria-label="Würfel">
+            ${visibleDice
+              .map((die, index) =>
+                renderDie({
+                  value: die,
+                  index,
+                  held: turn.held[index],
+                  locked: turn.forceReroll,
+                  disabled: turn.isRolling,
+                  rolling: turn.isRolling && rollingIndices.includes(index),
+                }),
+              )
+              .join("")}
+          </div>
+          <div class="pill-row">
+            ${score ? `<span class="pill ${score.category === "schogge_aus" ? "warn" : "info"}">${escapeHtml(score.label)}</span>` : ""}
+            ${turn.forceReroll ? `<span class="pill gold">Pflichtwurf</span>` : ""}
+            ${turn.isRolling ? `<span class="pill gold">Würfel rollen</span>` : ""}
+            ${round.potFrozen ? `<span class="pill warn">Pott geschlossen</span>` : ""}
+          </div>
+          ${renderLuckySaveStatus()}
+          <div class="actions">
+            <button class="button ${turn.forceReroll ? "gold" : ""}" id="roll-dice" ${canRoll ? "" : "disabled"}>
+              ${turn.forceReroll ? `Pflichtwurf (Wurf ${nextThrowNumber})` : `Würfeln (Wurf ${nextThrowNumber})`}
+            </button>
+            <button class="button gold" id="take-result" ${canTake ? "" : "disabled"}>Ergebnis bestätigen</button>
+          </div>
+        `}
       </section>
     `;
   }
@@ -1179,6 +1393,54 @@
       >
         ${pips}
       </button>
+    `;
+  }
+
+  function isCurrentTableEdgeEvent(turn) {
+    return Boolean(state.tableEdgeEventActive && state.tableEdgeEvent && turn && state.tableEdgeEvent.playerId === turn.playerId);
+  }
+
+  function renderTableEdgeOverlay() {
+    const event = state.tableEdgeEvent;
+    const rules = normalizeSpecialRules(state.specialRules);
+    const seconds = Math.max(0.1, getRescueWindowMs(rules) / 1000).toLocaleString("de-DE", {
+      maximumFractionDigits: 1,
+    });
+    return `
+      <div class="table-edge-overlay">
+        <p class="eyebrow">Schogge Spezial</p>
+        <h2>Der Würfel rollt zur Tischkante!</h2>
+        <p>Tippe innerhalb von ${seconds} Sekunden, bevor der Würfel fällt.</p>
+        <button class="button rescue-button" id="rescue-die">WÜRFEL RETTEN!</button>
+        ${
+          playerHasLuckySave(event?.playerId)
+            ? `<button class="button gold" id="use-lucky-save">Lucky Save einsetzen</button>`
+            : ""
+        }
+      </div>
+    `;
+  }
+
+  function renderLuckySaveStatus() {
+    const rules = normalizeSpecialRules(state.specialRules);
+    if (!isSpecialRulesEnabled(state) || !rules.luckySave || !state.gameStarted) {
+      return "";
+    }
+    return `
+      <div class="lucky-save-panel">
+        <span>Lucky Saves</span>
+        <div class="pill-row">
+          ${state.players
+            .map(
+              (player) => `
+                <span class="pill ${playerHasLuckySave(player.id) ? "good" : "info"}">
+                  ${escapeHtml(player.name)}: ${playerHasLuckySave(player.id) ? "bereit" : "verbraucht"}
+                </span>
+              `,
+            )
+            .join("")}
+        </div>
+      </div>
     `;
   }
 
@@ -1217,6 +1479,7 @@
           </div>
           <div class="score-badge">${escapeHtml(resultLabel)}</div>
         </div>
+        ${renderSpecialEventList(result.specialEvents || [])}
         <button class="button" id="continue-after-result">${isRoundDone ? "Zur Auswertung" : "Nächster Spieler"}</button>
       </section>
     `;
@@ -1264,6 +1527,7 @@
             })
             .join("")}
         </ul>
+        ${renderSpecialEventList(round.specialEvents || [])}
         <button class="button" id="next-round">Nächste Runde</button>
       </section>
     `;
@@ -1307,7 +1571,8 @@
                     (entry) => `
                       <li class="history-row">
                         <strong>Runde ${entry.roundNumber}: ${escapeHtml(entry.summary)}</strong>
-                        <span class="history-meta">${escapeHtml(entry.date)} · Start: ${escapeHtml(entry.startPlayer)} · Limit ${entry.limit}</span>
+                        <span class="history-meta">${escapeHtml(entry.date)} · Start: ${escapeHtml(entry.startPlayer)} · Limit ${entry.limit} · ${escapeHtml(entry.mode || "Klassisch")}</span>
+                        ${renderSpecialEventList(entry.events || [])}
                       </li>
                     `,
                   )
@@ -1328,6 +1593,36 @@
         <strong>${escapeHtml(lowest.label)}</strong>
       </div>
     `;
+  }
+
+  function renderSpecialEventList(events) {
+    if (!Array.isArray(events) || !events.length) {
+      return "";
+    }
+    return `
+      <div class="special-event-list">
+        <span>Spezialereignisse</span>
+        <ul>
+          ${events.map((event) => `<li>${escapeHtml(event.text || formatSpecialEventText(event))}</li>`).join("")}
+        </ul>
+      </div>
+    `;
+  }
+
+  function formatSpecialEventText(event) {
+    if (event.type === "table_edge_triggered") {
+      return `${event.playerName}: Tischkanten-Ereignis bei Wurf ${event.throwNumber}.`;
+    }
+    if (event.type === "table_edge_rescued") {
+      return `${event.playerName}: Würfel gerettet.`;
+    }
+    if (event.type === "lucky_save_used") {
+      return `${event.playerName}: Lucky Save eingesetzt.`;
+    }
+    if (event.type === "table_edge_lost") {
+      return `${event.playerName}: Würfel vom Tisch gefallen.`;
+    }
+    return "Spezialereignis";
   }
 
   function formatResultThrowMeta(result) {
@@ -1361,6 +1656,7 @@
 
   async function refreshApp() {
     clearActiveRollTimers();
+    clearActiveRescueTimer();
     try {
       if ("serviceWorker" in navigator) {
         const registrations = await navigator.serviceWorker.getRegistrations();
@@ -1429,6 +1725,43 @@
       resumeOnlineSession();
     });
 
+    $$("[data-game-mode]", app).forEach((button) => {
+      button.addEventListener("click", () => {
+        state.gameMode = button.dataset.gameMode === GAME_MODES.SPECIAL ? GAME_MODES.SPECIAL : GAME_MODES.CLASSIC;
+        state.specialRules = normalizeSpecialRules(state.specialRules);
+        render();
+      });
+    });
+
+    $$("[data-special-toggle]", app).forEach((input) => {
+      input.addEventListener("change", () => {
+        const key = input.dataset.specialToggle;
+        state.specialRules = {
+          ...normalizeSpecialRules(state.specialRules),
+          [key]: input.checked,
+        };
+        render();
+      });
+    });
+
+    $$("[data-special-intensity]", app).forEach((button) => {
+      button.addEventListener("click", () => {
+        state.specialRules = {
+          ...normalizeSpecialRules(state.specialRules),
+          intensity: button.dataset.specialIntensity,
+        };
+        render();
+      });
+    });
+
+    $("#special-penalty-text", app)?.addEventListener("input", (event) => {
+      state.specialRules = {
+        ...normalizeSpecialRules(state.specialRules),
+        penaltyText: event.target.value,
+      };
+      saveState();
+    });
+
     $$("[data-player-name]", app).forEach((input) => {
       input.addEventListener("input", () => {
         const player = state.players.find((entry) => entry.id === input.dataset.playerName);
@@ -1463,6 +1796,7 @@
 
   function prepareNewGame() {
     clearActiveRollTimers();
+    clearActiveRescueTimer();
     const names = state.players.map((player) => ({ id: createId(), name: player.name }));
     state = { ...defaultState(), players: names, history: state.history };
     render();
@@ -1792,6 +2126,12 @@
   }
 
   function bindTurnActions(app) {
+    if (state.tableEdgeEventActive) {
+      $("#rescue-die", app)?.addEventListener("click", rescueTableEdgeEvent);
+      $("#use-lucky-save", app)?.addEventListener("click", useLuckySaveForTableEdge);
+      return;
+    }
+
     $$("[data-toggle-die]", app).forEach((button) => {
       button.addEventListener("click", () => {
         const index = Number(button.dataset.toggleDie);
@@ -1811,6 +2151,7 @@
 
   function startGame() {
     clearActiveRollTimers();
+    clearActiveRescueTimer();
     state.players = state.players
       .map((player, index) => ({
         ...player,
@@ -1827,6 +2168,11 @@
     state.roundNumber = 1;
     state.pot = 0;
     state.nextStarterId = starter.id;
+    state.specialRules = normalizeSpecialRules(state.specialRules);
+    state.tableEdgeEventActive = false;
+    state.rescueDeadline = null;
+    state.tableEdgeEvent = null;
+    state.luckySaves = createLuckySaves(state.players);
     state.currentRound = null;
     state.currentTurn = null;
     state.lastResult = null;
@@ -1855,6 +2201,7 @@
       potFrozen: false,
       immediateAus: null,
       outcome: null,
+      specialEvents: [],
     };
     startTurnForCurrentIndex();
   }
@@ -1875,6 +2222,7 @@
       rollingIndices: [],
       rollAnimationToken: null,
       confirmationLocked: false,
+      specialEvents: [],
       message: "Bereit für Wurf 1.",
     };
     state.screen = "turn";
@@ -1894,13 +2242,24 @@
       return;
     }
     const finalDice = createFinalRollDice(turn, wasForced, rollingIndices);
+    const previousDice = [...turn.dice];
+    const previousHeld = [...turn.held];
     const throwNumber = registerThrowStart(turn, wasForced);
+    const tableEdgeRisk = getTableEdgeRisk(state, turn, wasForced);
+    const tableEdgeEvent = tableEdgeRisk > 0 && Math.random() < tableEdgeRisk
+      ? {
+          previousDice,
+          previousHeld,
+          probability: tableEdgeRisk,
+        }
+      : null;
 
     startRollAnimation(turn, {
       finalDice,
       rollingIndices,
       wasForced,
       throwNumber,
+      tableEdgeEvent,
     });
   }
 
@@ -1944,7 +2303,14 @@
     }
   }
 
-  function startRollAnimation(turn, { finalDice, rollingIndices, wasForced, throwNumber }) {
+  function clearActiveRescueTimer() {
+    if (activeRescueTimeoutId) {
+      clearTimeout(activeRescueTimeoutId);
+      activeRescueTimeoutId = null;
+    }
+  }
+
+  function startRollAnimation(turn, { finalDice, rollingIndices, wasForced, throwNumber, tableEdgeEvent = null }) {
     clearActiveRollTimers();
     const token = createId();
     const reduceMotion = prefersReducedMotion();
@@ -1973,15 +2339,31 @@
       if (state.currentTurn !== turn || turn.rollAnimationToken !== token) {
         return;
       }
-      finishRollAfterAnimation(turn, { finalDice, wasForced });
+      finishRollAfterAnimation(turn, { finalDice, wasForced, tableEdgeEvent, throwNumber });
     }, duration);
   }
 
-  function finishRollAfterAnimation(turn, { finalDice, wasForced }) {
+  function finishRollAfterAnimation(turn, { finalDice, wasForced, tableEdgeEvent = null, throwNumber = getActualThrowCount(turn) }) {
     turn.isRolling = false;
     turn.rollingDice = null;
     turn.rollingIndices = [];
     turn.rollAnimationToken = null;
+    turn.confirmationLocked = false;
+
+    if (tableEdgeEvent) {
+      startTableEdgeEvent(turn, {
+        ...tableEdgeEvent,
+        finalDice,
+        wasForced,
+        throwNumber,
+      });
+      return;
+    }
+
+    applyFinalRollAfterAnimation(turn, { finalDice, wasForced });
+  }
+
+  function applyFinalRollAfterAnimation(turn, { finalDice, wasForced, rescueMessage = "" }) {
     turn.dice = finalDice;
     turn.confirmationLocked = false;
 
@@ -1991,7 +2373,7 @@
       turn.dice = doubleSix.dice;
       turn.held = doubleSix.held;
       turn.forceReroll = true;
-      turn.message = `Doppel-Sechs: ${doubleSix.display}. Alle Nicht-Einsen müssen erneut gewürfelt werden. Der Pflichtwurf ist Wurf ${getNextThrowNumber(turn)}.`;
+      turn.message = `${rescueMessage ? `${rescueMessage} ` : ""}Doppel-Sechs: ${doubleSix.display}. Alle Nicht-Einsen müssen erneut gewürfelt werden. Der Pflichtwurf ist Wurf ${getNextThrowNumber(turn)}.`;
       render();
       return;
     }
@@ -2009,6 +2391,9 @@
         ? "Wurflimit erreicht. Bitte Ergebnis bestätigen."
         : "Wurf abgeschlossen. Du kannst bestätigen oder weiterwürfeln.";
     }
+    if (rescueMessage) {
+      turn.message = `${rescueMessage} ${turn.message}`;
+    }
 
     const score = scoreCombination(turn.dice);
     if (score.category === "schogge_aus" && getActualThrowCount(turn) === 1) {
@@ -2019,7 +2404,138 @@
     render();
   }
 
-  function acceptTurn(reason) {
+  function startTableEdgeEvent(turn, event) {
+    const rules = normalizeSpecialRules(state.specialRules);
+    const player = currentPlayer();
+    const playerNameValue = player?.name || "Spieler";
+    const rescueWindowMs = getRescueWindowMs(rules);
+    const tableEdgeEvent = {
+      token: createId(),
+      playerId: turn.playerId,
+      playerName: playerNameValue,
+      previousDice: [...event.previousDice],
+      previousHeld: [...event.previousHeld],
+      finalDice: [...event.finalDice],
+      wasForced: Boolean(event.wasForced),
+      throwNumber: event.throwNumber,
+      probability: event.probability,
+      rescueWindowMs,
+    };
+
+    addSpecialEvent({
+      type: "table_edge_triggered",
+      playerId: turn.playerId,
+      playerName: playerNameValue,
+      throwNumber: event.throwNumber,
+      text: `${playerNameValue}: Tischkanten-Ereignis bei Wurf ${event.throwNumber}.`,
+    });
+
+    if (!rules.rescueMechanic) {
+      failTableEdgeEvent(tableEdgeEvent, "Rettungsmechanik deaktiviert.");
+      return;
+    }
+
+    state.tableEdgeEventActive = true;
+    state.rescueDeadline = Date.now() + rescueWindowMs;
+    state.tableEdgeEvent = tableEdgeEvent;
+    turn.message = "Der Würfel rollt zur Tischkante!";
+    render();
+
+    clearActiveRescueTimer();
+    activeRescueTimeoutId = setTimeout(() => {
+      if (state.tableEdgeEvent?.token === tableEdgeEvent.token) {
+        failTableEdgeEvent(tableEdgeEvent, "Zeitfenster verpasst.");
+      }
+    }, rescueWindowMs);
+  }
+
+  function clearTableEdgeEvent() {
+    clearActiveRescueTimer();
+    state.tableEdgeEventActive = false;
+    state.rescueDeadline = null;
+    state.tableEdgeEvent = null;
+  }
+
+  function rescueTableEdgeEvent() {
+    const event = state.tableEdgeEvent;
+    const turn = state.currentTurn;
+    if (!event || !turn || event.playerId !== turn.playerId) {
+      return;
+    }
+    if (Date.now() > (state.rescueDeadline || 0)) {
+      failTableEdgeEvent(event, "Zeitfenster verpasst.");
+      return;
+    }
+    completeTableEdgeRescue(event, false);
+  }
+
+  function useLuckySaveForTableEdge() {
+    const event = state.tableEdgeEvent;
+    const turn = state.currentTurn;
+    if (!event || !turn || event.playerId !== turn.playerId || !playerHasLuckySave(event.playerId)) {
+      return;
+    }
+    consumeLuckySave(event.playerId);
+    completeTableEdgeRescue(event, true);
+  }
+
+  function completeTableEdgeRescue(event, usedLuckySave) {
+    const turn = state.currentTurn;
+    if (!turn || event.playerId !== turn.playerId) {
+      return;
+    }
+    clearTableEdgeEvent();
+    const message = usedLuckySave
+      ? "Lucky Save eingesetzt! Der Würfel bleibt auf dem Tisch."
+      : "Gerettet! Der Würfel bleibt auf dem Tisch.";
+    addSpecialEvent({
+      type: usedLuckySave ? "lucky_save_used" : "table_edge_rescued",
+      playerId: event.playerId,
+      playerName: event.playerName,
+      throwNumber: event.throwNumber,
+      text: usedLuckySave
+        ? `${event.playerName}: Lucky Save bei Wurf ${event.throwNumber} eingesetzt.`
+        : `${event.playerName}: Würfel bei Wurf ${event.throwNumber} gerettet.`,
+    });
+    applyFinalRollAfterAnimation(turn, {
+      finalDice: event.finalDice,
+      wasForced: event.wasForced,
+      rescueMessage: message,
+    });
+  }
+
+  function failTableEdgeEvent(event, reason) {
+    const turn = state.currentTurn;
+    if (!turn || event.playerId !== turn.playerId) {
+      return;
+    }
+    const rules = normalizeSpecialRules(state.specialRules);
+    clearTableEdgeEvent();
+    turn.isRolling = false;
+    turn.rollingDice = null;
+    turn.rollingIndices = [];
+    turn.rollAnimationToken = null;
+    turn.forceReroll = false;
+    turn.dice = [...event.previousDice];
+    turn.held = [...event.previousHeld];
+    turn.confirmationLocked = false;
+    const penalty = rules.penaltyEnabled ? formatPenaltyText(rules.penaltyText, event.playerName) : "";
+    const eventRecord = {
+      type: "table_edge_lost",
+      outcome: "lost",
+      playerId: event.playerId,
+      playerName: event.playerName,
+      throwNumber: event.throwNumber,
+      reason,
+      penaltyText: penalty,
+      text: `${event.playerName}: Würfel vom Tisch gefallen${penalty ? ` (${penalty})` : ""}.`,
+    };
+    addSpecialEvent(eventRecord);
+    turn.message = `Würfel vom Tisch gefallen!${penalty ? ` ${penalty}` : ""}`;
+    acceptTurn("table_edge_loss", { tableEdgeEvent: eventRecord });
+  }
+
+  function acceptTurn(reason, options = {}) {
     const round = state.currentRound;
     const turn = state.currentTurn;
     if (!round || !turn || turn.forceReroll || turn.isRolling || turn.confirmationLocked || !turn.dice.every(Boolean)) {
@@ -2054,6 +2570,9 @@
       potChange = score.schluecke;
       state.pot += potChange;
     }
+    if (reason === "table_edge_loss" && !special) {
+      special = "table_edge_loss";
+    }
 
     if (!round.immediateAus && isStartPlayerSettingLimit(round, turn)) {
       setRoundLimit = deriveStarterRegularLimit(turn);
@@ -2076,6 +2595,8 @@
       reason,
       special,
       setRoundLimit,
+      tableEdgeEvent: options.tableEdgeEvent || null,
+      specialEvents: [...(turn.specialEvents || [])],
     };
 
     round.results.push(result);
@@ -2126,7 +2647,9 @@
       roundNumber: round.number,
       startPlayer: round.startPlayerName,
       limit: round.regularLimit,
+      mode: getGameModeLabel(state.gameMode),
       summary: outcomeText(round.outcome),
+      events: round.specialEvents || [],
       results: round.results.map((result) => ({
         playerName: result.playerName,
         displayDice: result.score.displayDice,
@@ -2134,6 +2657,7 @@
         rollCount: result.rollCount,
         actualThrowCount: result.actualThrowCount || result.rollCount,
         regularRollCount: result.regularRollCount || result.rollCount,
+        specialEvents: result.specialEvents || [],
       })),
     };
 
@@ -2153,6 +2677,9 @@
     const limitText = result.setRoundLimit
       ? ` Für diese Runde gelten maximal ${result.setRoundLimit} Würfe.`
       : "";
+    if (result.tableEdgeEvent?.outcome === "lost") {
+      return `Würfel vom Tisch gefallen! ${result.tableEdgeEvent.penaltyText || "Der bisherige Wurf zählt."}${limitText}`;
+    }
     if (result.special === "immediate_aus") {
       return `${result.playerName} verliert sofort und trinkt den bisherigen Pott.`;
     }

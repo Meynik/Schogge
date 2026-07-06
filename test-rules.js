@@ -16,6 +16,10 @@ const {
   getCombinationDisplayName,
   getLowestRoundScoreState,
   getResultDisplayName,
+  GAME_MODES,
+  defaultSpecialRules,
+  getTableEdgeRisk,
+  getRescueWindowMs,
 } = require("./app.js");
 
 function result(playerId, dice, completedOrder, rollCount = 1) {
@@ -317,7 +321,7 @@ test("Reguläres Schogge aus ab dem zweiten Wurf wartet auf Bestätigung", () =>
   assert.equal(shouldAutoAcceptTurn(round, turn), false);
 });
 
-test("Startspieler beendet nach einem Wurf: andere haben maximal einen regulÃ¤ren Wurf", () => {
+test("Startspieler beendet nach einem Wurf: andere haben maximal einen regulären Wurf", () => {
   const starterTurn = turnState({ regularRollCount: 1, rollCount: 1 });
   const limit = deriveStarterRegularLimit(starterTurn);
   const round = roundState(limit);
@@ -329,7 +333,7 @@ test("Startspieler beendet nach einem Wurf: andere haben maximal einen regulÃ¤
   assert.equal(canTakeTurnResult(round, nextPlayerTurn), true);
 });
 
-test("Startspieler beendet nach zwei WÃ¼rfen: andere haben maximal zwei regulÃ¤re WÃ¼rfe", () => {
+test("Startspieler beendet nach zwei Würfen: andere haben maximal zwei reguläre Würfe", () => {
   const starterTurn = turnState({ regularRollCount: 2, rollCount: 2 });
   const limit = deriveStarterRegularLimit(starterTurn);
   const round = roundState(limit);
@@ -341,7 +345,7 @@ test("Startspieler beendet nach zwei WÃ¼rfen: andere haben maximal zwei regul�
   assert.equal(canTakeTurnResult(round, turnState({ playerId: "B", regularRollCount: 2, rollCount: 2 })), true);
 });
 
-test("Startspieler nutzt drei WÃ¼rfe: Ergebnis wartet auf Bestätigung", () => {
+test("Startspieler nutzt drei Würfe: Ergebnis wartet auf Bestätigung", () => {
   const starterTurn = turnState({ regularRollCount: 3, rollCount: 3 });
 
   assert.equal(deriveStarterRegularLimit(starterTurn), 3);
@@ -349,7 +353,7 @@ test("Startspieler nutzt drei WÃ¼rfe: Ergebnis wartet auf Bestätigung", () =>
   assert.equal(shouldAutoAcceptTurn(roundState(null), starterTurn), false);
 });
 
-test("PflichtwÃ¼rfe erhÃ¶hen das regulÃ¤re Limit nicht und blockieren Ãœbernehmen", () => {
+test("Pflichtwürfe erhöhen das reguläre Limit nicht und blockieren Übernehmen", () => {
   const openForcedTurn = turnState({
     regularRollCount: 2,
     rollCount: 2,
@@ -470,6 +474,42 @@ test("Startspieler-Limit bleibt nach Pflichtwurf als viertem Wurf bei drei", () 
   assert.equal(limit, 3);
   assert.equal(getTurnRegularLimit(round, turnState({ playerId: "B" })), 3);
   assert.equal(canRollTurn(round, turnState({ playerId: "B", regularRollCount: 3, actualThrowCount: 3, rollCount: 3 })), false);
+});
+
+test("Schogge Spezial: klassischer Modus erzeugt kein Tischkanten-Risiko", () => {
+  const game = { gameMode: GAME_MODES.CLASSIC, specialRules: defaultSpecialRules() };
+  const turn = turnState({ regularRollCount: 2, actualThrowCount: 2, rollCount: 2 });
+
+  assert.equal(getTableEdgeRisk(game, turn, false), 0);
+});
+
+test("Schogge Spezial: freiwilliges Weiterwürfeln erhöht Risiko", () => {
+  const game = { gameMode: GAME_MODES.SPECIAL, specialRules: defaultSpecialRules() };
+
+  assert.equal(getTableEdgeRisk(game, turnState({ regularRollCount: 1, actualThrowCount: 1, rollCount: 1 }), false), 0);
+  assert.equal(getTableEdgeRisk(game, turnState({ regularRollCount: 2, actualThrowCount: 2, rollCount: 2 }), false), 0.02);
+  assert.equal(getTableEdgeRisk(game, turnState({ regularRollCount: 3, actualThrowCount: 3, rollCount: 3 }), false), 0.05);
+});
+
+test("Schogge Spezial: Pflichtwurf bleibt risikofrei", () => {
+  const game = { gameMode: GAME_MODES.SPECIAL, specialRules: defaultSpecialRules() };
+  const forcedTurn = turnState({ regularRollCount: 3, actualThrowCount: 4, rollCount: 4, forceReroll: true });
+
+  assert.equal(getTableEdgeRisk(game, forcedTurn, true), 0);
+});
+
+test("Schogge Spezial: Intensität steuert Risiko und Rettungsfenster", () => {
+  const relaxed = { ...defaultSpecialRules(), intensity: "relaxed" };
+  const normal = { ...defaultSpecialRules(), intensity: "normal" };
+  const escalating = { ...defaultSpecialRules(), intensity: "escalating" };
+  const turn = turnState({ regularRollCount: 2, actualThrowCount: 2, rollCount: 2 });
+
+  assert.equal(getTableEdgeRisk({ gameMode: GAME_MODES.SPECIAL, specialRules: relaxed }, turn, false), 0.01);
+  assert.equal(getTableEdgeRisk({ gameMode: GAME_MODES.SPECIAL, specialRules: normal }, turn, false), 0.02);
+  assert.equal(getTableEdgeRisk({ gameMode: GAME_MODES.SPECIAL, specialRules: escalating }, turn, false), 0.035);
+  assert.equal(getRescueWindowMs(relaxed), 1800);
+  assert.equal(getRescueWindowMs(normal), 1200);
+  assert.equal(getRescueWindowMs(escalating), 800);
 });
 
 console.log("Alle Regeltests bestanden.");
